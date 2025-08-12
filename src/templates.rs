@@ -1,21 +1,14 @@
-// Templates for generated files
-
-/// Root CMakeLists.txt scaffold with a managed components block.
-pub fn root_cmakelists() -> String {
-    r#"cmake_minimum_required(VERSION 3.25)
-project(MyProject LANGUAGES CXX)
-
-# Subdirectories will be (re)written by triton generate
-# ## triton:components begin
-add_subdirectory(components/app)
-# ## triton:components end
-"#
-    .into()
+pub fn root_cmakelists(app_name: &str) -> String {
+    format!(
+r#"cmake_minimum_required(VERSION 3.25)
+project({} LANGUAGES CXX)
+"#,
+        app_name
+    )
 }
 
-/// Per-component CMakeLists.txt scaffold with a managed deps block.
 pub fn component_cmakelists() -> String {
-    r#"cmake_minimum_required(VERSION 3.25)
+r#"cmake_minimum_required(VERSION 3.25)
 
 # Detect target name from directory
 get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
@@ -35,51 +28,48 @@ set_property(TARGET ${_comp_name} PROPERTY CXX_STANDARD 20)
 
 # Dependencies (managed by triton)
 # ## triton:deps begin
-# (none)
 # ## triton:deps end
 "#
-    .into()
+    .to_string()
 }
 
-/// CMakePresets.json with correct ${sourceDir} escaping.
-/// NOTE: in Rust `format!`, write `${{sourceDir}}` to emit `${sourceDir}`.
-pub fn cmake_presets(name: &str, generator: &str, triplet: &str) -> String {
+pub fn cmake_presets(app_name: &str, generator: &str, triplet: &str) -> String {
+    // Keep paths portable; CMake supports ${sourceDir}
     format!(
 r#"{{
   "version": 6,
   "cmakeMinimumRequired": {{ "major": 3, "minor": 25, "patch": 0 }},
   "configurePresets": [
     {{
-      "name": "default",
-      "displayName": "{name} (default)",
-      "generator": "{gen}",
-      "binaryDir": "build/default",
+      "name": "debug",
+      "displayName": "Debug",
+      "generator": "{}",
+      "binaryDir": "${{sourceDir}}/build/debug",
       "cacheVariables": {{
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_TOOLCHAIN_FILE": "${{sourceDir}}/vcpkg/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "{triplet}",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "VCPKG_TARGET_TRIPLET": "{}"
       }}
     }},
     {{
       "name": "release",
-      "inherits": "default",
-      "cacheVariables": {{ "CMAKE_BUILD_TYPE": "Release" }},
-      "binaryDir": "build/release"
-    }},
-    {{
-      "name": "debug",
-      "inherits": "default",
-      "cacheVariables": {{ "CMAKE_BUILD_TYPE": "Debug" }},
-      "binaryDir": "build/debug"
+      "displayName": "Release",
+      "generator": "{}",
+      "binaryDir": "${{sourceDir}}/build/release",
+      "cacheVariables": {{
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "${{sourceDir}}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "{}"
+      }}
     }}
   ],
   "buildPresets": [
-    {{ "name": "debug", "configurePreset": "debug", "configuration": "Debug" }},
-    {{ "name": "release", "configurePreset": "release", "configuration": "Release" }}
+    {{ "name": "debug", "configurePreset": "debug" }},
+    {{ "name": "release", "configurePreset": "release" }}
   ]
 }}"#,
-        gen = generator,
-        triplet = triplet,
-        name = name
+        generator, triplet, generator, triplet
     )
 }

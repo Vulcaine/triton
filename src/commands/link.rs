@@ -19,11 +19,13 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
         kind: "lib".into(),
         deps: vec![],
         comps: vec![],
+        git: vec![],
     });
     root.components.entry(to.into()).or_insert(TritonComponent {
         kind: "lib".into(),
         deps: vec![],
         comps: vec![],
+        git: vec![],
     });
 
     // Add link if missing
@@ -35,8 +37,8 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
     }
 
     // Persist
-    let _ = write_json_pretty_changed("triton.json", &root)?;
-    let _ = write_json_pretty_changed(
+    write_json_pretty_changed("triton.json", &root)?;
+    write_json_pretty_changed(
         &format!("components/{from}/triton.json"),
         root.components.get(from).unwrap(),
     )?;

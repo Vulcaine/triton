@@ -1,250 +1,150 @@
 use anyhow::{Context, Result};
-use regex::{NoExpand, Regex};
 use std::fs;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use std::path::Path;
 
 use crate::models::{TritonComponent, TritonRoot};
-use crate::util::read_json;
+use crate::templates::root_cmakelists;
+use crate::util::{read_to_string_opt, write_text_if_changed};
 
-/// Replace the `# ## triton:components ...` block at repo root.
-pub fn regenerate_root_cmake(_root: &TritonRoot) -> Result<()> {
-    // discover existing component dirs (on disk)
-    let mut existing: Vec<String> = Vec::new();
-    if Path::new("components").exists() {
-        for entry in WalkDir::new("components").min_depth(1).max_depth(1) {
-            let e = entry?;
-            if e.file_type().is_dir() {
-                existing.push(e.file_name().to_string_lossy().into_owned());
-            }
-        }
+pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
+    let mut body = String::new();
+    body.push_str(&root_cmakelists(&root.app_name));
+    body.push_str("\n# Subdirectories will be (re)written by triton generate\n");
+    body.push_str("# ## triton:components begin\n");
+    for name in root.components.keys() {
+        body.push_str(&format!("add_subdirectory(components/{name})\n"));
     }
-    existing.sort();
-
-    let mut cmake = fs::read_to_string("CMakeLists.txt")?;
-    let mut lines = String::new();
-    for c in &existing {
-        lines.push_str(&format!("add_subdirectory(components/{})\n", c));
-    }
-    if lines.is_empty() {
-        lines = "# (no components)".into();
-    }
-
-    let re = Regex::new(r"(?s)# ## triton:components begin.*?# ## triton:components end").unwrap();
-    let replacement = format!("# ## triton:components begin\n{}\n# ## triton:components end", lines);
-    cmake = re.replace(&cmake, NoExpand(&replacement)).to_string();
-    fs::write("CMakeLists.txt", cmake)?;
+    body.push_str("\n# ## triton:components end\n");
+    write_text_if_changed("CMakeLists.txt", &body).context("writing CMakeLists.txt")?;
     Ok(())
 }
 
-pub fn rewrite_component_cmake(name: &str, comp: &TritonComponent) -> Result<()> {
-    use regex::Regex;
-    use std::path::Path;
+fn gen_vcpkg_dep_lines(comp: &TritonComponent) -> Vec<String> {
+    // Combine Boost components into one find_package
+    let mut boost_components: Vec<String> = vec![];
+    let mut lines: Vec<String> = vec![];
 
-    #[derive(Debug, Clone, serde::Deserialize)]
-    struct ThirdPartyDep {
-        repo: String,
-        name: String,
-        #[serde(default)]
-        target: Option<String>,
-        #[serde(default)]
-        branch: Option<String>,
-    }
-
-    fn load_third_party_list(component: &str) -> Vec<ThirdPartyDep> {
-        let p = format!("components/{component}/third_party.json");
-        let path = std::path::Path::new(&p);
-        if path.exists() {
-            crate::util::read_json(path).unwrap_or_default()
-        } else {
-            vec![]
-        }
-    }
-
-    let p = format!("components/{name}/CMakeLists.txt");
-    let mut cmake = fs::read_to_string(&p).with_context(|| format!("reading {}", p))?;
-
-    // Load root to know triplet and vcpkg installed prefix (for fallbacks)
-    let root: TritonRoot = read_json("triton.json")?;
-    let vcpkg_inst = Path::new("vcpkg_installed").join(&root.triplet);
-    let share_dir = vcpkg_inst.join("share");
-    let lib_dir = vcpkg_inst.join("lib");
-
-    let mut lines: Vec<String> = Vec::new();
-
-    // Resolve local target name robustly
-    lines.push("# --- triton: resolve local target name ---".into());
-    lines.push(r#"if(NOT DEFINED _comp_name)"#.into());
-    lines.push(r#"  get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)"#.into());
-    lines.push("endif()".into());
-    lines.push("".into());
-
-    // Inter-component deps first
-    for c in &comp.comps {
-        lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE {})", c));
-    }
-
-    // Third-party vendored deps
-    let third_party = load_third_party_list(name);
-    for tp in &third_party {
-        lines.push(format!(
-            "add_subdirectory(\"${{PROJECT_SOURCE_DIR}}/third_party/{}\" EXCLUDE_FROM_ALL)",
-            tp.name
-        ));
-        if let Some(t) = &tp.target {
-            lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE {})", t));
-        } else {
-            lines.push(format!(
-                "# TODO(triton): set correct target for {} and uncomment next line",
-                tp.repo
-            ));
-            lines.push(format!(
-                "# target_link_libraries(${{_comp_name}} PRIVATE {})",
-                tp.name
-            ));
-        }
-    }
-
-    // Partition vcpkg deps: Boost subports vs others
-    let mut boost_components: Vec<String> = Vec::new();
-    let mut others: Vec<String> = Vec::new();
-    for pkg in &comp.deps {
-        let lc = pkg.to_ascii_lowercase();
-        if lc == "boost" {
+    for d in &comp.deps {
+        if d == "boost" || d == "boost-headers" {
+            lines.push("find_package(Boost CONFIG REQUIRED)".into());
+            lines.push("target_link_libraries(${_comp_name} PRIVATE Boost::headers)".into());
             continue;
         }
-        if lc.starts_with("boost-") {
-            let comp_name = lc.trim_start_matches("boost-").replace('-', "_");
-            boost_components.push(comp_name);
-        } else {
-            others.push(pkg.clone());
+        if let Some(rest) = d.strip_prefix("boost-") {
+            // map boost-filesystem -> filesystem, etc.
+            boost_components.push(rest.to_string());
+            continue;
         }
+        // Generic hint (non-Boost): keep it conservative to avoid breaking builds
+        lines.push(format!("# TODO(triton): add CMake for dependency '{}'", d));
     }
-    boost_components.sort();
-    boost_components.dedup();
 
-    // Boost group
     if !boost_components.is_empty() {
+        boost_components.sort();
+        boost_components.dedup();
         lines.push(format!(
             "find_package(Boost CONFIG COMPONENTS {} REQUIRED)",
             boost_components.join(" ")
         ));
-        lines.push("target_link_libraries(${_comp_name} PRIVATE Boost::headers)".into());
         for c in &boost_components {
-            lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE Boost::{} )", c));
+            lines.push(format!(
+                "target_link_libraries(${{_comp_name}} PRIVATE Boost::{})",
+                c
+            ));
         }
-    } else if comp.deps.iter().any(|d| d.eq_ignore_ascii_case("boost")) {
-        lines.push("find_package(Boost CONFIG REQUIRED)".into());
-        lines.push("target_link_libraries(${_comp_name} PRIVATE Boost::headers)".into());
     }
 
-    // Other vcpkg deps (as before)
-    for pkg in &others {
-        let (find_name, link_targets) = canonical_pkg(pkg);
-        let share_key = pkg.to_ascii_lowercase();
+    lines
+}
 
-        if has_config_package(&share_dir, &share_key) {
-            lines.push(format!("find_package({} CONFIG REQUIRED)", find_name));
-            if !link_targets.is_empty() {
+fn gen_git_dep_lines(comp: &TritonComponent) -> Vec<String> {
+    let mut lines = vec![];
+    for g in &comp.git {
+        let name = &g.name;
+        lines.push(format!(
+            "add_subdirectory(\"${{PROJECT_SOURCE_DIR}}/third_party/{name}\" \"${{PROJECT_BINARY_DIR}}/third_party/{name}\" EXCLUDE_FROM_ALL)"
+        ));
+        lines.push(format!(
+            "if(EXISTS \"${{PROJECT_SOURCE_DIR}}/third_party/{name}/include\")\n  target_include_directories(${{_comp_name}} PRIVATE \"${{PROJECT_SOURCE_DIR}}/third_party/{name}/include\")\nendif()"
+        ));
+        if let Some(target) = &g.target {
+            if !target.trim().is_empty() {
                 lines.push(format!(
                     "target_link_libraries(${{_comp_name}} PRIVATE {})",
-                    link_targets.join(" ")
+                    target
                 ));
             }
-            continue;
-        }
-
-        if let Some(usage) = read_usage_hint(&share_dir, &share_key) {
-            lines.push(format!("# vcpkg usage for {}:", pkg));
-            for ln in usage.lines() {
-                lines.push(format!("# {}", ln));
-            }
-            lines.push("# (triton added a generic include+lib fallback below)".into());
-        }
-
-        lines.push(
-            r#"target_include_directories(${_comp_name} PRIVATE "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include")"#.into(),
-        );
-
-        let guessed = guess_libs(&lib_dir, pkg);
-        if guessed.is_empty() {
-            lines.push(format!(
-                "# TODO(triton): could not find config for '{}'; add concrete libs from ${{{{VCPKG_INSTALLED_DIR}}}}/${{{{VCPKG_TARGET_TRIPLET}}}}/lib if needed",
-                pkg
-            ));
-        } else {
-            let joined = guessed.iter().map(|p| cmake_path(p)).collect::<Vec<_>>().join(" ");
-            lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE {})", joined));
         }
     }
+    lines
+}
 
-    let block = if lines.is_empty() { "# (none)".to_string() } else { lines.join("\n") };
-    let re = Regex::new(r"(?s)# ## triton:deps begin.*?# ## triton:deps end").unwrap();
-    let replacement = format!("# ## triton:deps begin\n{}\n# ## triton:deps end", block);
-    cmake = re.replace(&cmake, regex::NoExpand(&replacement)).to_string();
-    fs::write(&p, cmake)?;
+pub fn rewrite_component_cmake(name: &str, comp: &TritonComponent) -> Result<()> {
+    let path = format!("components/{name}/CMakeLists.txt");
+    let base = read_to_string_opt(&path).unwrap_or_else(|| {
+        // Minimal scaffold if file is missing
+        format!(
+r#"cmake_minimum_required(VERSION 3.25)
+
+# Detect target name from directory
+get_filename_component(_comp_name "${{CMAKE_CURRENT_SOURCE_DIR}}" NAME)
+
+# If there's a main.cpp, assume executable; else library
+file(GLOB_RECURSE COMP_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+list(LENGTH COMP_SOURCES _src_len)
+if(_src_len GREATER 0)
+  add_executable(${{_comp_name}})
+  target_sources(${{_comp_name}} PRIVATE ${{COMP_SOURCES}})
+else()
+  add_library(${{_comp_name}})
+endif()
+
+target_include_directories(${{_comp_name}} PRIVATE "include")
+set_property(TARGET ${{_comp_name}} PROPERTY CXX_STANDARD 20)
+
+# Dependencies (managed by triton)
+# ## triton:deps begin
+# ## triton:deps end
+"#)
+    });
+
+    // Replace only the managed region
+    let begin = "# ## triton:deps begin";
+    let end = "# ## triton:deps end";
+    let (pre, post) = match (base.find(begin), base.find(end)) {
+        (Some(b), Some(e)) if e >= b => {
+            let pre = &base[..b];
+            let post = &base[(e + end.len())..];
+            (pre.to_string(), post.to_string())
+        }
+        _ => (base, "\n".to_string()),
+    };
+
+    let mut dep_lines = vec![
+        "# --- triton: resolve local target name ---".into(),
+        "if(NOT DEFINED _comp_name)".into(),
+        "  get_filename_component(_comp_name \"${CMAKE_CURRENT_SOURCE_DIR}\" NAME)".into(),
+        "endif()".into(),
+        "".into(),
+    ];
+    dep_lines.extend(gen_git_dep_lines(comp));
+    if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
+        dep_lines.push("".into());
+    }
+    dep_lines.extend(gen_vcpkg_dep_lines(comp));
+
+    let mut new_body = String::new();
+    new_body.push_str(&pre);
+    new_body.push_str(begin);
+    new_body.push('\n');
+    for l in dep_lines {
+        new_body.push_str(&l);
+        new_body.push('\n');
+    }
+    new_body.push_str(end);
+    new_body.push_str(&post);
+
+    write_text_if_changed(&path, &new_body)
+        .with_context(|| format!("writing {}", path))?;
     Ok(())
-}
-
-
-fn has_config_package(share_dir: &Path, pkg_key: &str) -> bool {
-    let d = share_dir.join(pkg_key);
-    if !d.exists() {
-        return false;
-    }
-    for e in WalkDir::new(&d).max_depth(2).into_iter().filter_map(|e| e.ok()) {
-        let p = e.path();
-        if p.is_file() {
-            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                if name.ends_with("Config.cmake") {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-fn read_usage_hint(share_dir: &Path, pkg_key: &str) -> Option<String> {
-    let p = share_dir.join(pkg_key).join("usage");
-    fs::read_to_string(p).ok()
-}
-
-fn guess_libs(lib_dir: &Path, pkg: &str) -> Vec<PathBuf> {
-    if !lib_dir.exists() { return vec![]; }
-    let mut out = Vec::new();
-    let needle = pkg.to_ascii_lowercase();
-    for e in WalkDir::new(lib_dir).min_depth(1).max_depth(1).into_iter().filter_map(|e| e.ok()) {
-        let p = e.path();
-        if !p.is_file() { continue; }
-        if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
-            let ext_lc = ext.to_ascii_lowercase();
-            if ext_lc == "lib" || ext_lc == "a" {
-                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    let stem_lc = stem.to_ascii_lowercase();
-                    if stem_lc.contains(&needle) || stem_lc.starts_with(&format!("lib{}", needle)) {
-                        out.push(p.to_path_buf());
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-fn cmake_path(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
-}
-
-/// Map common vcpkg ports to their canonical CMake package + target(s).
-/// Default is `<pkg>` and `<pkg>::<pkg>`.
-fn canonical_pkg(pkg: &str) -> (String, Vec<String>) {
-    match pkg.to_ascii_lowercase().as_str() {
-        "boost" => ("Boost".into(), vec!["Boost::headers".into()]),
-        "openssl" => ("OpenSSL".into(), vec!["OpenSSL::SSL".into(), "OpenSSL::Crypto".into()]),
-        other => {
-            let name = other.to_string();
-            (name.clone(), vec![format!("{}::{}", name, name)])
-        }
-    }
 }

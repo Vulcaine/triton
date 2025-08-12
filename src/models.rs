@@ -1,86 +1,71 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
-pub struct TritonComponent {
-    /// "exe" or "lib"
-    #[serde(default = "default_kind")]
-    pub kind: String,
-    /// vcpkg package deps
-    #[serde(default)]
-    pub deps: Vec<String>,
-    /// linked components (targets)
-    #[serde(default)]
-    pub comps: Vec<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitDep {
+    pub repo: String,             // e.g. "nlohmann/json"
+    pub name: String,             // folder name under third_party (e.g. "json")
+    pub target: Option<String>,   // optional cmake target to link
+    pub branch: Option<String>,   // optional branch/tag
 }
 
-fn default_kind() -> String { "exe".into() }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TritonComponent {
+    pub kind: String,       // "exe" or "lib"
+    pub deps: Vec<String>,  // vcpkg package names
+    pub comps: Vec<String>, // component links
+    pub git: Vec<GitDep>,   // vendored git deps
+}
+impl Default for TritonComponent {
+    fn default() -> Self {
+        Self { kind: "lib".into(), deps: vec![], comps: vec![], git: vec![] }
+    }
+}
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TritonRoot {
+    pub app_name: String,
     pub triplet: String,
     pub generator: String,
     pub cxx_std: String,
-    /// Map component name -> metadata
-    #[serde(default)]
     pub components: BTreeMap<String, TritonComponent>,
 }
 
-/* ---------------- vcpkg manifest ---------------- */
-
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+// vcpkg manifest types
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VcpkgManifest {
     pub name: String,
-    #[serde(default)]
     pub version: String,
-    #[serde(default)]
     pub dependencies: Vec<Dependency>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Dependency {
     Name(String),
     Detailed(DependencyDetail),
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DependencyDetail {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub features: Vec<String>,
-    #[serde(
-        rename = "default-features",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_features: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
 }
 
-/* Equality helpers */
-
+// helper to compare deps
 pub fn dep_eq(a: &Dependency, b: &Dependency) -> bool {
     match (a, b) {
         (Dependency::Name(x), Dependency::Name(y)) => x == y,
         (Dependency::Detailed(x), Dependency::Detailed(y)) => {
-            x.name == y.name
-                && x.features == y.features
-                && x.host.unwrap_or(false) == y.host.unwrap_or(false)
-                && x.default_features.unwrap_or(true) == y.default_features.unwrap_or(true)
+            x.name == y.name && x.features == y.features && x.host == y.host
         }
-        // Name("pkg") equals Detailed{name:"pkg"} with no features and no flags
-        (Dependency::Name(x), Dependency::Detailed(y)) => {
-            x == &y.name
-                && y.features.is_empty()
-                && y.host.is_none()
-                && y.default_features.is_none()
-        }
-        (Dependency::Detailed(x), Dependency::Name(y)) => {
-            &x.name == y && x.features.is_empty() && x.host.is_none() && x.default_features.is_none()
-        }
+        _ => false,
     }
 }

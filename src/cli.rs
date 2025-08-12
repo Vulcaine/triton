@@ -25,7 +25,7 @@ pub enum Commands {
     Add {
         pkg: String,
         #[arg(long, default_value = "app")]
-        component: String,
+        component: Option<String>,
         #[arg(long)]
         features: Option<String>,
         #[arg(long)]

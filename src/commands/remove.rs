@@ -1,80 +1,71 @@
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
 use std::fs;
 use std::path::Path;
 
 use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
-use crate::models::{Dependency, DependencyDetail, TritonRoot, VcpkgManifest};
+use crate::models::{Dependency, TritonRoot, VcpkgManifest};
 use crate::util::{read_json, write_json_pretty_changed};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct ThirdPartyDep {
-    repo: String,
-    name: String,
-    #[serde(default)]
-    target: Option<String>,
-    #[serde(default)]
-    branch: Option<String>,
-}
-
-fn third_party_list_path(component: &str) -> String {
-    format!("components/{component}/third_party.json")
-}
-
-fn load_third_party(component: &str) -> Result<Vec<ThirdPartyDep>> {
-    let p = third_party_list_path(component);
-    let path = Path::new(&p);
-    if path.exists() {
-        Ok(read_json(path)?)
-    } else {
-        Ok(vec![])
-    }
-}
-
-fn save_third_party(component: &str, list: &Vec<ThirdPartyDep>) -> Result<()> {
-    let _ = write_json_pretty_changed(third_party_list_path(component), list)?;
-    Ok(())
-}
-
 pub fn handle_remove(pkg: &str, component: &str, features: Option<&str>, host: bool) -> Result<()> {
+    // Load root + locate component
     let mut root: TritonRoot = read_json("triton.json")?;
-
-    // --- try third_party first (accept owner/repo or just folder name) ---
-    {
-        let mut tp = load_third_party(component)?;
-        let before = tp.len();
-        tp.retain(|t| !(t.repo.eq_ignore_ascii_case(pkg) || t.name.eq_ignore_ascii_case(pkg)));
-        if tp.len() != before {
-            // delete folder too
-            for removed in load_third_party(component)?
-                .into_iter()
-                .filter(|t| t.repo.eq_ignore_ascii_case(pkg) || t.name.eq_ignore_ascii_case(pkg))
-            {
-                let dir = format!("third_party/{}", removed.name);
-                if Path::new(&dir).exists() {
-                    let _ = fs::remove_dir_all(&dir);
-                }
-            }
-            save_third_party(component, &tp)?;
-            // Rewrite CMake & root and return
-            if let Some(comp) = root.components.get(component) {
-                rewrite_component_cmake(component, comp)?;
-            }
-            regenerate_root_cmake(&root)?;
-            eprintln!("Removed third_party '{}' from component '{}'.", pkg, component);
-            return Ok(());
-        }
+    if !root.components.contains_key(component) {
+        eprintln!("Component '{}' not found; nothing to do.", component);
+        return Ok(());
     }
 
-    // --- normal vcpkg path ---
-    // Update component deps
-    if let Some(comp) = root.components.get_mut(component) {
+    // --- Vendored (Git) removal path ---------------------------------------------------------
+    // If looks like GitHub "owner/name" OR matches a vendored name, remove from git list
+    let tail = pkg.split('/').last().unwrap_or(pkg).to_string();
+    let vendored_removed = {
+        let comp = root.components.get_mut(component).unwrap(); // mutable borrow scoped to this block
+        let before_len = comp.git.len();
+        comp.git.retain(|g| !(g.repo == pkg || g.name == tail));
+        if comp.git.len() != before_len {
+            // Persist component file while we still have &mut comp
+            write_json_pretty_changed(&format!("components/{component}/triton.json"), comp)?;
+            true
+        } else {
+            false
+        }
+    }; // <— mutable borrow of root.components ends here
+
+    if vendored_removed {
+        // Now we can borrow `root` immutably again
+        write_json_pretty_changed("triton.json", &root)?;
+
+        // If no other component uses this vendored folder, delete it
+        let still_used_elsewhere = root.components.iter().any(|(n, c)| {
+            if n == component {
+                return false;
+            }
+            c.git.iter().any(|g| g.name == tail || g.repo == pkg)
+        });
+        if !still_used_elsewhere {
+            let dir = format!("third_party/{}", tail);
+            if Path::new(&dir).exists() {
+                let _ = fs::remove_dir_all(&dir);
+            }
+        }
+
+        // Rewrite CMake
+        let comp_now = root.components.get(component).unwrap();
+        rewrite_component_cmake(component, comp_now)?;
+        regenerate_root_cmake(&root)?;
+        eprintln!("Removed vendored '{}' from component '{}'.", pkg, component);
+        return Ok(());
+    }
+
+    // --- vcpkg removal path ------------------------------------------------------------------
+    // 1) Update component deps
+    {
+        let comp = root.components.get_mut(component).unwrap();
         comp.deps.retain(|d| d != pkg);
         write_json_pretty_changed(&format!("components/{component}/triton.json"), comp)?;
-    }
+    } // drop mutable borrow
     write_json_pretty_changed("triton.json", &root)?;
 
-    // Update vcpkg manifest
+    // 2) Update vcpkg manifest
     let mut mani: VcpkgManifest = read_json("vcpkg.json")?;
     let feats_to_remove: Vec<String> = features
         .unwrap_or_default()
@@ -94,23 +85,22 @@ pub fn handle_remove(pkg: &str, component: &str, features: Option<&str>, host: b
                     Some(Dependency::Name(n))
                 }
             }
-            Dependency::Detailed(mut d) => {
+            // Detailed dep: possibly remove specific features or entire entry
+            crate::models::Dependency::Detailed(mut d) => {
                 if d.name != pkg {
-                    return Some(Dependency::Detailed(d));
+                    return Some(crate::models::Dependency::Detailed(d));
                 }
-                // if host flag mismatches, keep it
                 if host != d.host.unwrap_or(false) {
-                    return Some(Dependency::Detailed(d));
+                    return Some(crate::models::Dependency::Detailed(d));
                 }
                 if feats_to_remove.is_empty() {
                     None
                 } else {
-                    d.features
-                        .retain(|f| !feats_to_remove.iter().any(|x| x == f));
+                    d.features.retain(|f| !feats_to_remove.iter().any(|x| x == f));
                     if d.features.is_empty() && d.host.is_none() && d.default_features.is_none() {
                         Some(Dependency::Name(d.name))
                     } else {
-                        Some(Dependency::Detailed(d))
+                        Some(crate::models::Dependency::Detailed(d))
                     }
                 }
             }
@@ -119,10 +109,9 @@ pub fn handle_remove(pkg: &str, component: &str, features: Option<&str>, host: b
 
     write_json_pretty_changed("vcpkg.json", &mani)?;
 
-    // Rewrite CMake & root
-    if let Some(comp) = root.components.get(component) {
-        rewrite_component_cmake(component, comp)?;
-    }
+    // 3) Rewrite CMake + root
+    let comp_now = root.components.get(component).unwrap();
+    rewrite_component_cmake(component, comp_now)?;
     regenerate_root_cmake(&root)?;
     eprintln!(
         "Removed '{}'{} from component '{}'.",

@@ -3,10 +3,11 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::{TritonComponent, TritonRoot, VcpkgManifest};
-use crate::templates::{cmake_presets, component_cmakelists, root_cmakelists};
+use crate::templates::{cmake_presets};
 use crate::tools::ensure_ninja_dir;
-use crate::util::{run, write_json_pretty_changed, write_text_if_changed, Change};
+use crate::util::{write_json_pretty_changed, write_text_if_changed, Change};
 
 pub fn handle_init(
     name_opt: Option<&str>,
@@ -36,8 +37,8 @@ pub fn handle_init(
         }
     }
 
-    // Project name
-    let project_name: String = match name_opt {
+    // Project/app name
+    let app_name: String = match name_opt {
         Some(n) => n.to_string(),
         None => project_dir
             .file_name()
@@ -52,60 +53,64 @@ pub fn handle_init(
     let vcpkg_dir = Path::new("vcpkg");
     if !vcpkg_dir.exists() {
         eprintln!("Cloning vcpkg...");
-        run(
-            "git",
-            &["clone", "https://github.com/microsoft/vcpkg.git", "vcpkg"],
-            ".",
-        )?;
+        // clone into ./vcpkg inside project
+        let out = std::process::Command::new("git")
+            .args(["clone", "https://github.com/microsoft/vcpkg.git", "vcpkg"])
+            .current_dir(".")
+            .status()
+            .context("failed to spawn git")?;
+        if !out.success() {
+            anyhow::bail!("git clone vcpkg failed");
+        }
         changes.push(("vcpkg/ (git clone)".into(), Change::Created));
     } else {
         changes.push(("vcpkg/".into(), Change::Unchanged));
     }
 
-    // folders & sample
-    fs::create_dir_all("components/app/src")?;
-    fs::create_dir_all("components/app/include")?;
+    // folders & sample (component named after app)
+    let comp_dir = format!("components/{app_name}");
+    fs::create_dir_all(format!("{comp_dir}/src"))?;
+    fs::create_dir_all(format!("{comp_dir}/include"))?;
     let hello = r#"#include <iostream>
 int main() { std::cout << "Hello from triton app!\n"; return 0; }
 "#;
     changes.push((
-        "components/app/src/main.cpp".into(),
-        write_text_if_changed("components/app/src/main.cpp", hello)?,
+        format!("{comp_dir}/src/main.cpp"),
+        write_text_if_changed(format!("{comp_dir}/src/main.cpp"), hello)?,
     ));
 
     // metadata
     let mut root = TritonRoot::default();
+    root.app_name = app_name.clone();
     root.triplet = triplet.to_string();
     root.generator = generator.to_string();
     root.cxx_std = cxx_std.to_string();
     root.components.insert(
-        "app".into(),
+        app_name.clone(),
         TritonComponent {
             kind: "exe".into(),
             deps: vec![],
             comps: vec![],
+            git: vec![],
         },
     );
+
     changes.push((
         "triton.json".into(),
         write_json_pretty_changed("triton.json", &root)?,
     ));
 
     changes.push((
-        "components/app/triton.json".into(),
+        format!("{comp_dir}/triton.json"),
         write_json_pretty_changed(
-            "components/app/triton.json",
-            &TritonComponent {
-                kind: "exe".into(),
-                deps: vec![],
-                comps: vec![],
-            },
+            format!("{comp_dir}/triton.json"),
+            root.components.get(&app_name).unwrap(),
         )?,
     ));
 
     // vcpkg manifest
     let manifest = VcpkgManifest {
-        name: project_name.clone(),
+        name: app_name.clone(),
         version: "0.0.0".into(),
         dependencies: vec![],
     };
@@ -114,30 +119,23 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
         write_json_pretty_changed("vcpkg.json", &manifest)?,
     ));
 
-    // CMake files
-    changes.push((
-        "CMakeLists.txt".into(),
-        write_text_if_changed("CMakeLists.txt", &root_cmakelists())?,
-    ));
-    changes.push((
-        "components/app/CMakeLists.txt".into(),
-        write_text_if_changed(
-            "components/app/CMakeLists.txt",
-            &component_cmakelists(),
-        )?,
-    ));
+    // Root CMakeLists.txt (regenerate from metadata so it has the correct app name)
+    regenerate_root_cmake(&root)?;
+
+    // Component CMakeLists.txt (basic scaffold)
+    rewrite_component_cmake(&app_name, root.components.get(&app_name).unwrap())?;
+
+    // CMakePresets.json
+    let presets = cmake_presets(&app_name, generator, triplet);
     changes.push((
         "CMakePresets.json".into(),
-        write_text_if_changed(
-            "CMakePresets.json",
-            &cmake_presets(&project_name, generator, triplet),
-        )?,
+        write_text_if_changed("CMakePresets.json", &presets)?,
     ));
 
     eprintln!("\nChanges in {}:", project_dir.display());
     for (path, ch) in &changes {
         eprintln!("  - {:<40} {:?}", path, ch);
     }
-    eprintln!("\nInitialized project '{}'.", project_name);
+    eprintln!("\nInitialized project '{}'.", app_name);
     Ok(())
 }

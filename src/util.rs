@@ -17,6 +17,11 @@ pub fn vcpkg_exe_path() -> String {
     p.to_string_lossy().to_string()
 }
 
+/// Read a file to string, returning `None` if it doesn't exist or can't be read.
+pub fn read_to_string_opt<P: AsRef<Path>>(p: P) -> Option<String> {
+    fs::read_to_string(p.as_ref()).ok()
+}
+
 /// Write text only if absent or different; returns what happened.
 pub fn write_text_if_changed<P: AsRef<Path>>(p: P, content: &str) -> Result<Change> {
     let p = p.as_ref();
