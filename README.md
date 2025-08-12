@@ -19,16 +19,16 @@ With Rust installed:
 cargo install --path .   # run from the Triton source repo
 ```
 
-Make sure Cargo’s bin dir is on your `PATH`:
+## Make sure Cargo’s bin dir is on your `PATH`:
 
-## Git Bash
+### Git Bash
 
 ```bash
 echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-## PowerShell
+### PowerShell
 
 ```bash
 $env:Path += ";$env:USERPROFILE\.cargo\bin"
@@ -130,9 +130,9 @@ triton generate                   # write/refresh managed CMake blocks
 
 ```bash
 triton add lua sol2
-triton add lua->Game sol2->Game
+triton add lua:Game sol2:Game
 triton add lua sol2 Game 
-triton add org/repo@branch->Renderer 
+triton add org/repo@tag:Renderer 
 ```
 
 **Behavior**
