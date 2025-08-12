@@ -4,6 +4,7 @@ use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::TritonRoot;
 use crate::util::read_json;
 
+/// Rescan components and rewrite managed CMake blocks from metadata.
 pub fn handle_generate() -> Result<()> {
     let root: TritonRoot = read_json("triton.json")?;
     for (name, comp) in &root.components {

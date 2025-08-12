@@ -39,7 +39,11 @@ pub fn handle_init(
     // Project name
     let project_name: String = match name_opt {
         Some(n) => n.to_string(),
-        None => project_dir.file_name().and_then(|s| s.to_str()).unwrap_or("MyProject").to_string(),
+        None => project_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("MyProject")
+            .to_string(),
     };
 
     let mut changes: Vec<(String, Change)> = Vec::new();
@@ -48,7 +52,11 @@ pub fn handle_init(
     let vcpkg_dir = Path::new("vcpkg");
     if !vcpkg_dir.exists() {
         eprintln!("Cloning vcpkg...");
-        run("git", &["clone", "https://github.com/microsoft/vcpkg.git", "vcpkg"], ".")?;
+        run(
+            "git",
+            &["clone", "https://github.com/microsoft/vcpkg.git", "vcpkg"],
+            ".",
+        )?;
         changes.push(("vcpkg/ (git clone)".into(), Change::Created));
     } else {
         changes.push(("vcpkg/".into(), Change::Unchanged));
@@ -72,25 +80,39 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
     root.cxx_std = cxx_std.to_string();
     root.components.insert(
         "app".into(),
-        TritonComponent { kind: "exe".into(), deps: vec![] },
+        TritonComponent {
+            kind: "exe".into(),
+            deps: vec![],
+            comps: vec![],
+        },
     );
-    changes.push(("triton.json".into(), write_json_pretty_changed("triton.json", &root)?));
+    changes.push((
+        "triton.json".into(),
+        write_json_pretty_changed("triton.json", &root)?,
+    ));
 
     changes.push((
         "components/app/triton.json".into(),
         write_json_pretty_changed(
             "components/app/triton.json",
-            &TritonComponent { kind: "exe".into(), deps: vec![] },
+            &TritonComponent {
+                kind: "exe".into(),
+                deps: vec![],
+                comps: vec![],
+            },
         )?,
     ));
 
-    // vcpkg manifest (no hostDependencies — host tools live inside dependencies with "host": true)
+    // vcpkg manifest
     let manifest = VcpkgManifest {
         name: project_name.clone(),
         version: "0.0.0".into(),
         dependencies: vec![],
     };
-    changes.push(("vcpkg.json".into(), write_json_pretty_changed("vcpkg.json", &manifest)?));
+    changes.push((
+        "vcpkg.json".into(),
+        write_json_pretty_changed("vcpkg.json", &manifest)?,
+    ));
 
     // CMake files
     changes.push((
@@ -99,7 +121,10 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
     ));
     changes.push((
         "components/app/CMakeLists.txt".into(),
-        write_text_if_changed("components/app/CMakeLists.txt", &component_cmakelists())?,
+        write_text_if_changed(
+            "components/app/CMakeLists.txt",
+            &component_cmakelists(),
+        )?,
     ));
     changes.push((
         "CMakePresets.json".into(),

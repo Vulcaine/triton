@@ -10,7 +10,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize a new project. If --name is given, create a new folder; otherwise use cwd.
+    /// Initialize a project
     Init {
         #[arg(long)]
         name: Option<String>,
@@ -21,8 +21,7 @@ pub enum Commands {
         #[arg(long, default_value = "20")]
         cxx_std: String,
     },
-
-    /// Add a package to vcpkg.json and wire it into a component
+    /// Add a vcpkg package to a component (creates the component if missing)
     Add {
         pkg: String,
         #[arg(long, default_value = "app")]
@@ -32,25 +31,27 @@ pub enum Commands {
         #[arg(long)]
         host: bool,
     },
-
-    /// Rescan components, rewrite CMake managed blocks
+    /// Link component A to component B (target_link_libraries(A PRIVATE B))
+    Link {
+        from: String,
+        to: String,
+    },
+    /// Re-generate managed CMake blocks
     Generate,
-
-    /// Configure+build a project at PATH (default "."); choose --config debug|release
+    /// Build
     Build {
-        path: Option<String>,
+        path: String,
         #[arg(long, default_value = "debug")]
         config: String,
     },
-
-    /// Build then run an executable component (default: app)
+    /// Run
     Run {
-        path: Option<String>,
+        path: String,
         #[arg(long)]
         component: Option<String>,
         #[arg(long, default_value = "debug")]
         config: String,
-        #[arg(trailing_var_arg = true)]
+        #[arg(last = true)]
         args: Vec<String>,
     },
 }

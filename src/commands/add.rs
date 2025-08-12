@@ -5,10 +5,10 @@ use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::{
     dep_eq, Dependency, DependencyDetail, TritonComponent, TritonRoot, VcpkgManifest,
 };
+use crate::templates::component_cmakelists;
 use crate::util::{
     read_json, run, vcpkg_exe_path, write_json_pretty_changed, write_text_if_changed,
 };
-use crate::templates::component_cmakelists;
 
 pub fn handle_add(pkg: &str, component: &str, features: Option<&str>, host: bool) -> Result<()> {
     // Load root metadata
@@ -23,7 +23,11 @@ pub fn handle_add(pkg: &str, component: &str, features: Option<&str>, host: bool
         )?;
         root.components.insert(
             component.into(),
-            TritonComponent { kind: "lib".into(), deps: vec![] },
+            TritonComponent {
+                kind: "lib".into(),
+                deps: vec![],
+                comps: vec![],
+            },
         );
     }
 
@@ -49,7 +53,6 @@ pub fn handle_add(pkg: &str, component: &str, features: Option<&str>, host: bool
         .filter(|s| !s.is_empty())
         .collect();
 
-    // Create the dependency record (host flag lives here)
     let dep = if feats.is_empty() && !host {
         Dependency::Name(pkg.into())
     } else {
