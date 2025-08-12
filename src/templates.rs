@@ -8,7 +8,7 @@ project({} LANGUAGES CXX)
 }
 
 pub fn component_cmakelists() -> String {
-r#"cmake_minimum_required(VERSION 3.25)
+    r#"cmake_minimum_required(VERSION 3.25)
 
 # Detect target name from directory
 get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
@@ -18,16 +18,43 @@ file(GLOB_RECURSE COMP_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 list(LENGTH COMP_SOURCES _src_len)
 if(_src_len GREATER 0)
   add_executable(${_comp_name})
+  set(_is_exe ON)
   target_sources(${_comp_name} PRIVATE ${COMP_SOURCES})
 else()
   add_library(${_comp_name})
+  set(_is_exe OFF)
 endif()
 
 target_include_directories(${_comp_name} PRIVATE "include")
 set_property(TARGET ${_comp_name} PROPERTY CXX_STANDARD 20)
 
+# On Windows, copy runtime DLLs beside the executable (only if any exist)
+if(WIN32 AND _is_exe)
+  # Generate a small script that only copies when the list is non-empty
+  file(GENERATE OUTPUT "${PROJECT_BINARY_DIR}/_triton_copy_runtime_$<CONFIG>_$<TARGET_FILE_BASE_NAME:${_comp_name}>.cmake"
+    CONTENT "if(NOT \"${dlls}\" STREQUAL \"\")
+  execute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different ${dlls} \"${dest}\")
+endif()
+")
+
+  add_custom_command(TARGET ${_comp_name} POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+      -Ddlls="$<TARGET_RUNTIME_DLLS:${_comp_name}>"
+      -Ddest="$<TARGET_FILE_DIR:${_comp_name}>"
+      -P "${PROJECT_BINARY_DIR}/_triton_copy_runtime_$<CONFIG>_$<TARGET_FILE_BASE_NAME:${_comp_name}>.cmake"
+    COMMAND_EXPAND_LISTS
+  )
+endif()
+
 # Dependencies (managed by triton)
 # ## triton:deps begin
+# --- triton: resolve local target name ---
+if(NOT DEFINED _comp_name)
+  get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
+endif()
+
+# (triton will inject find_package / add_subdirectory / target_link_libraries lines here)
+
 # ## triton:deps end
 "#
     .to_string()
@@ -73,3 +100,4 @@ r#"{{
         generator, triplet, generator, triplet
     )
 }
+

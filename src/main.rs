@@ -21,16 +21,15 @@ fn main() -> Result<()> {
         Commands::Add { pkg, component, features, host } =>
             handle_add(&pkg, component.as_deref(), features.as_deref(), host),
 
-        Commands::Remove { pkg, component, features, host } =>
-            // `component` is a String here, so pass `&component`
-            handle_remove(&pkg, &component, features.as_deref(), host),
+       Commands::Remove { pkg, component, features, host } => 
+        handle_remove(&pkg, Some(component.as_str()), features.as_deref(), host),
 
         Commands::Link { from, to } =>
             handle_link(&from, &to),
 
         Commands::Generate => {
             let root: models::TritonRoot = util::read_json("triton.json")?;
-            for (n, c) in &root.components { cmake::rewrite_component_cmake(n, c)?; }
+            for (n, c) in &root.components { cmake::rewrite_component_cmake(n, &root, c)?; }
             cmake::regenerate_root_cmake(&root)
         }
 

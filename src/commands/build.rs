@@ -7,7 +7,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
+use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
+use crate::models::TritonRoot;
+use crate::templates::cmake_presets;
 use crate::tools::ensure_ninja_dir;
+use crate::util::read_json;
 
 fn normalize_config(cfg: &str) -> &'static str {
     match cfg.to_ascii_lowercase().as_str() {
@@ -15,9 +19,25 @@ fn normalize_config(cfg: &str) -> &'static str {
         _ => "debug",
     }
 }
-fn preset_for(cfg: &str) -> &'static str { if cfg == "release" { "release" } else { "debug" } }
+fn preset_for(cfg: &str) -> &'static str {
+    if cfg == "release" { "release" } else { "debug" }
+}
 fn build_dir_for(project: &Path, cfg: &str) -> PathBuf { project.join(format!("build/{}", cfg)) }
-fn has_cache(build_dir: &Path) -> bool { build_dir.join("CMakeCache.txt").exists() }
+
+fn is_configured_for_generator(build_dir: &Path, generator: &str) -> bool {
+    let cache = build_dir.join("CMakeCache.txt");
+    if !cache.exists() {
+        return false;
+    }
+    let g = generator.to_ascii_lowercase();
+    if g.contains("ninja") {
+        return build_dir.join("build.ninja").exists();
+    } else if g.contains("unix makefiles") {
+        return build_dir.join("Makefile").exists();
+    }
+    // For VS/Xcode/etc, CMakeCache.txt presence is generally enough to trigger re-generation as needed.
+    true
+}
 
 fn load_presets(project: &Path) -> Result<(Value, HashMap<String, Value>)> {
     let mut s = String::new();
@@ -34,11 +54,17 @@ fn load_presets(project: &Path) -> Result<(Value, HashMap<String, Value>)> {
     Ok((v, map))
 }
 
-fn resolve_generator_for_preset(m: &HashMap<String, Value>, start: &str, guard: &mut Vec<String>) -> Option<String> {
+fn resolve_generator_for_preset(
+    m: &HashMap<String, Value>,
+    start: &str,
+    guard: &mut Vec<String>,
+) -> Option<String> {
     if guard.len() > 32 { return None; }
     guard.push(start.to_string());
     let p = m.get(start)?;
-    if let Some(gen) = p.get("generator").and_then(|g| g.as_str()) { return Some(gen.to_string()); }
+    if let Some(gen) = p.get("generator").and_then(|g| g.as_str()) {
+        return Some(gen.to_string());
+    }
     if let Some(inh) = p.get("inherits") {
         if let Some(s) = inh.as_str() {
             if !guard.contains(&s.to_string()) {
@@ -130,41 +156,58 @@ fn write_batch_and_run(
 }
 
 pub fn handle_build(path: &str, config: &str) -> Result<()> {
+    // Resolve project dir
     let project = PathBuf::from(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
     let cfg = normalize_config(config);
     let preset = preset_for(cfg);
     let build_dir = build_dir_for(&project, cfg);
 
-    if !project.join("CMakePresets.json").exists() {
-        anyhow::bail!("No CMakePresets.json in {}. Did you run `triton init` here?", project.display());
+    // (Re)generate CMake files from triton.json every build
+    let root: TritonRoot = read_json(project.join("triton.json"))?;
+    regenerate_root_cmake(&root)?;
+    for (name, comp) in &root.components {
+        rewrite_component_cmake(name, &root, comp)?;
     }
 
+    // Ensure CMakePresets.json exists (create if missing)
+    let presets_path = project.join("CMakePresets.json");
+    if !presets_path.exists() {
+        let text = cmake_presets(&root.app_name, &root.generator, &root.triplet);
+        fs::write(&presets_path, text)
+            .with_context(|| format!("writing {}", presets_path.display()))?;
+    }
+
+    // Load presets to figure out generator / env
     let (_v, map) = load_presets(&project)?;
     let mut guard = Vec::new();
     let effective_gen = resolve_generator_for_preset(&map, preset, &mut guard)
         .or_else(|| resolve_generator_for_preset(&map, "default", &mut guard))
         .unwrap_or_else(|| "Ninja".to_string());
 
+    // Resolve portable Ninja if needed
     let mut ninja_abs_dir: Option<PathBuf> = None;
     if effective_gen.eq_ignore_ascii_case("ninja") {
         let dir = ensure_ninja_dir(&project)?;
         ninja_abs_dir = Some(dir);
     }
 
-    // CONFIGURE only if cache missing
-    if !has_cache(&build_dir) {
+    // Configure if not configured for this generator (cache + buildsystem file)
+    if !is_configured_for_generator(&build_dir, &effective_gen) {
         fs::create_dir_all(&build_dir)?;
         let mut configure_line = format!("cmake --preset {}", preset);
         if let Some(dir) = &ninja_abs_dir {
             let ninja_bin = if cfg!(windows) { dir.join("ninja.exe") } else { dir.join("ninja") };
             configure_line.push_str(&format!(" -DCMAKE_MAKE_PROGRAM=\"{}\"", ninja_bin.display()));
         }
+
         #[cfg(windows)]
         let using_ninja_on_windows = effective_gen.eq_ignore_ascii_case("ninja");
         #[cfg(not(windows))]
         let using_ninja_on_windows = false;
+
         #[cfg(windows)]
         if using_ninja_on_windows {
+            // Ensure MSVC cl.exe is used with Ninja
             configure_line.push_str(" -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe");
         }
 
@@ -187,31 +230,31 @@ pub fn handle_build(path: &str, config: &str) -> Result<()> {
                 let ninja_bin = if cfg!(windows) { dir.join("ninja.exe") } else { dir.join("ninja") };
                 cmd.arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja_bin.display()));
             }
+            // avoid leaking CC/CXX from environment
             cmd.env_remove("CC");
             cmd.env_remove("CXX");
             cmd.status().context("failed to run cmake --preset (configure)")?
         };
+
         if !status.success() {
             anyhow::bail!("cmake configure failed for preset {}", preset);
         }
     }
 
-    // BUILD
-    let mut b = if cfg!(windows) && effective_gen.eq_ignore_ascii_case("ninja") {
-        // MSVC env batch (fast when nothing to do; still prints banner once)
+    // Build
+    let status = if cfg!(windows) && effective_gen.eq_ignore_ascii_case("ninja") {
         let vs = vsdevcmd_path().ok_or_else(|| {
             anyhow::anyhow!(
                 "Visual Studio Build Tools not found. Install 'Desktop development with C++' \
                  (or run in a Developer Command Prompt)."
             )
         })?;
-        let status = write_batch_and_run(
+        write_batch_and_run(
             &project,
             &vs,
             ninja_abs_dir.as_deref(),
             &[&format!("cmake --build --preset={}", preset)],
-        )?;
-        status
+        )?
     } else {
         let mut b = Command::new("cmake");
         b.arg("--build").arg(format!("--preset={}", preset)).current_dir(&project);
@@ -224,9 +267,10 @@ pub fn handle_build(path: &str, config: &str) -> Result<()> {
         b.status().context("failed to run cmake --build")?
     };
 
-    if !b.success() {
+    if !status.success() {
         anyhow::bail!("build failed for preset {}", preset);
     }
+
     eprintln!("Built at {}", build_dir.display());
     Ok(())
 }

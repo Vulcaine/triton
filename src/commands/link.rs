@@ -14,37 +14,35 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
     // Load root metadata
     let mut root: TritonRoot = read_json("triton.json")?;
 
-    // Ensure components exist in metadata
-    root.components.entry(from.into()).or_insert(TritonComponent {
-        kind: "lib".into(),
-        deps: vec![],
-        comps: vec![],
-        git: vec![],
-    });
-    root.components.entry(to.into()).or_insert(TritonComponent {
-        kind: "lib".into(),
-        deps: vec![],
-        comps: vec![],
-        git: vec![],
-    });
+    // Ensure components exist in metadata (new schema: { kind, link })
+    root.components
+        .entry(from.to_string())
+        .or_insert(TritonComponent {
+            kind: "lib".into(),
+            link: vec![],
+        });
+
+    root.components
+        .entry(to.to_string())
+        .or_insert(TritonComponent {
+            kind: "lib".into(),
+            link: vec![],
+        });
 
     // Add link if missing
     {
-        let c = root.components.get_mut(from).unwrap();
-        if !c.comps.iter().any(|x| x == to) {
-            c.comps.push(to.into());
+        let comp_from = root.components.get_mut(from).unwrap();
+        if !comp_from.link.iter().any(|x| x == to) {
+            comp_from.link.push(to.to_string());
         }
     }
 
-    // Persist
+    // Persist only root (per-component json removed in new layout)
     write_json_pretty_changed("triton.json", &root)?;
-    write_json_pretty_changed(
-        &format!("components/{from}/triton.json"),
-        root.components.get(from).unwrap(),
-    )?;
 
-    // Rewrite CMake
-    rewrite_component_cmake(from, root.components.get(from).unwrap())?;
+    // Rewrite CMake for the 'from' component and regenerate root
+    let comp_from = root.components.get(from).unwrap();
+    rewrite_component_cmake(from, &root, comp_from)?;
     regenerate_root_cmake(&root)?;
 
     eprintln!("Linked component '{}' -> '{}'.", from, to);
