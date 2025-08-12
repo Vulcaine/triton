@@ -1,3 +1,4 @@
+// src/commands/run.rs
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,7 +56,6 @@ fn newest_project_input_mtime(project: &Path) -> SystemTime {
     // consider source/headers + key config files that trigger rebuild/regenerate
     let src_exts = ["c","cc","cxx","cpp","hpp","hh","h","hxx","inl","ixx"];
 
-    // Bind PathBufs first to avoid borrowing temporaries
     let comp_dir = project.join("components");
     let include_dir = project.join("include");
     let src_dir = project.join("src");
@@ -68,8 +68,8 @@ fn newest_project_input_mtime(project: &Path) -> SystemTime {
     let newest_sources = newest_mtime_in_dirs(&dirs, &src_exts);
 
     let important_files = [
-        project.join("CMakeLists.txt"),
-        project.join("CMakePresets.json"),
+        project.join("components/CMakeLists.txt"),
+        project.join("components/CMakePresets.json"),
         project.join("triton.json"),
         project.join("vcpkg.json"),
     ];
@@ -124,7 +124,7 @@ pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[Str
                 let newest_in = newest_project_input_mtime(&project);
                 newest_in > exe_mt
             }
-            _ => true, // no cache or no exe -> need build
+            _ => true,
         }
     };
 

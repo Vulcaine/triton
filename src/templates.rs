@@ -1,10 +1,13 @@
-pub fn root_cmakelists(app_name: &str) -> String {
-    format!(
-r#"cmake_minimum_required(VERSION 3.25)
-project({} LANGUAGES CXX)
-"#,
-        app_name
-    )
+// src/templates.rs
+pub fn components_dir_cmakelists() -> String {
+    r#"cmake_minimum_required(VERSION 3.25)
+project(triton_components LANGUAGES CXX)
+
+# Components are added below (managed by triton)
+# ## triton:components begin
+# ## triton:components end
+"#
+    .to_string()
 }
 
 pub fn component_cmakelists() -> String {
@@ -28,20 +31,12 @@ endif()
 target_include_directories(${_comp_name} PRIVATE "include")
 set_property(TARGET ${_comp_name} PROPERTY CXX_STANDARD 20)
 
-# On Windows, copy runtime DLLs beside the executable (only if any exist)
+# On Windows, copy runtime DLLs beside the executable after build
 if(WIN32 AND _is_exe)
-  # Generate a small script that only copies when the list is non-empty
-  file(GENERATE OUTPUT "${PROJECT_BINARY_DIR}/_triton_copy_runtime_$<CONFIG>_$<TARGET_FILE_BASE_NAME:${_comp_name}>.cmake"
-    CONTENT "if(NOT \"${dlls}\" STREQUAL \"\")
-  execute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different ${dlls} \"${dest}\")
-endif()
-")
-
   add_custom_command(TARGET ${_comp_name} POST_BUILD
-    COMMAND ${CMAKE_COMMAND}
-      -Ddlls="$<TARGET_RUNTIME_DLLS:${_comp_name}>"
-      -Ddest="$<TARGET_FILE_DIR:${_comp_name}>"
-      -P "${PROJECT_BINARY_DIR}/_triton_copy_runtime_$<CONFIG>_$<TARGET_FILE_BASE_NAME:${_comp_name}>.cmake"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_RUNTIME_DLLS:${_comp_name}>
+      $<TARGET_FILE_DIR:${_comp_name}>
     COMMAND_EXPAND_LISTS
   )
 endif()
@@ -53,15 +48,15 @@ if(NOT DEFINED _comp_name)
   get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
 endif()
 
-# (triton will inject find_package / add_subdirectory / target_link_libraries lines here)
+# (triton injects third_party add_subdirectory, vcpkg finds, and target_link_libraries here)
 
 # ## triton:deps end
 "#
     .to_string()
 }
 
-pub fn cmake_presets(app_name: &str, generator: &str, triplet: &str) -> String {
-    // Keep paths portable; CMake supports ${sourceDir}
+pub fn cmake_presets(_app_name: &str, generator: &str, triplet: &str) -> String {
+    // NOTE: Presets live in components/, but we still build to ../build/<cfg>
     format!(
 r#"{{
   "version": 6,
@@ -71,11 +66,11 @@ r#"{{
       "name": "debug",
       "displayName": "Debug",
       "generator": "{}",
-      "binaryDir": "${{sourceDir}}/build/debug",
+      "binaryDir": "${{sourceDir}}/../build/debug",
       "cacheVariables": {{
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_TOOLCHAIN_FILE": "${{sourceDir}}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "${{sourceDir}}/../vcpkg/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "{}"
       }}
     }},
@@ -83,11 +78,11 @@ r#"{{
       "name": "release",
       "displayName": "Release",
       "generator": "{}",
-      "binaryDir": "${{sourceDir}}/build/release",
+      "binaryDir": "${{sourceDir}}/../build/release",
       "cacheVariables": {{
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_TOOLCHAIN_FILE": "${{sourceDir}}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "${{sourceDir}}/../vcpkg/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "{}"
       }}
     }}
@@ -100,4 +95,3 @@ r#"{{
         generator, triplet, generator, triplet
     )
 }
-

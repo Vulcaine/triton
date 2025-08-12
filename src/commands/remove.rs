@@ -1,3 +1,4 @@
+// src/commands/remove.rs
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
@@ -6,7 +7,7 @@ use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::{RootDep, TritonRoot};
 use crate::util::{read_json, write_json_pretty_changed, write_text_if_changed};
 
-pub fn handle_remove(pkg: &str, component_opt: Option<&str>, features: Option<&str>, host: bool) -> Result<()> {
+pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&str>, _host: bool) -> Result<()> {
     let mut root: TritonRoot = read_json("triton.json")?;
 
     // Remove from root.deps
@@ -22,16 +23,22 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, features: Option<&s
         }
     });
 
-    // Remove from all components link lists
-    for (_, c) in root.components.iter_mut() {
-        c.link.retain(|l| l != pkg && Some(l) != removed_git_name.as_ref());
+    // Remove from components link lists
+    if let Some(comp_name) = component_opt {
+        if let Some(c) = root.components.get_mut(comp_name) {
+            c.link.retain(|l| l != pkg && Some(l) != removed_git_name.as_ref());
+        }
+    } else {
+        for (_, c) in root.components.iter_mut() {
+            c.link.retain(|l| l != pkg && Some(l) != removed_git_name.as_ref());
+        }
     }
 
-    // Update vcpkg.json to be the set of all remaining RootDep::Name
+    // Update vcpkg.json (only name-based deps stay there)
     let remaining_vcpkg: Vec<String> = root.deps.iter().filter_map(|d| {
         if let RootDep::Name(n) = d { Some(n.clone()) } else { None }
     }).collect();
-    let mut mani: serde_json::Value = serde_json::json!({ "name": root.app_name, "version":"0.0.0", "dependencies": remaining_vcpkg });
+    let mani = serde_json::json!({ "name": root.app_name, "version":"0.0.0", "dependencies": remaining_vcpkg });
     write_text_if_changed("vcpkg.json", &serde_json::to_string_pretty(&mani)?)?;
 
     write_json_pretty_changed("triton.json", &root)?;
@@ -48,10 +55,10 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, features: Option<&s
     }
 
     // Regenerate cmake for all components (safest after global change)
+    regenerate_root_cmake(&root)?;
     for (name, comp) in &root.components {
         rewrite_component_cmake(name, &root, comp)?;
     }
-    regenerate_root_cmake(&root)?;
     eprintln!("Removed '{}' from project.", pkg);
     Ok(())
 }

@@ -10,14 +10,18 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize a project
+    /// Initialize a project. `triton init demo` creates a new project.
+    /// `triton init .` minimally initializes the current repo (no component scaffold).
     Init {
-        #[arg(long)]
+        /// Project name (or '.' for minimal init in current folder)
         name: Option<String>,
+        /// vcpkg triplet
         #[arg(long, default_value = "x64-windows")]
         triplet: String,
+        /// CMake generator
         #[arg(long, default_value = "Ninja")]
         generator: String,
+        /// C++ standard
         #[arg(long, default_value = "20")]
         cxx_std: String,
     },
@@ -33,8 +37,9 @@ pub enum Commands {
     },
     /// Link component A to component B (target_link_libraries(A PRIVATE B))
     Link {
-        from: String,
-        to: String,
+        /// Either `A B` or `A->B`. If two args are provided, both are used.
+        edge: String,
+        to: Option<String>,
     },
      /// Remove a package (or only some features) and unlink it from a component
     Remove {

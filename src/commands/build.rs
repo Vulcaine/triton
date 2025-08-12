@@ -1,3 +1,4 @@
+// src/commands/build.rs
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -35,13 +36,12 @@ fn is_configured_for_generator(build_dir: &Path, generator: &str) -> bool {
     } else if g.contains("unix makefiles") {
         return build_dir.join("Makefile").exists();
     }
-    // For VS/Xcode/etc, CMakeCache.txt presence is generally enough to trigger re-generation as needed.
     true
 }
 
-fn load_presets(project: &Path) -> Result<(Value, HashMap<String, Value>)> {
+fn load_presets(presets_dir: &Path) -> Result<(Value, HashMap<String, Value>)> {
     let mut s = String::new();
-    File::open(project.join("CMakePresets.json"))?.read_to_string(&mut s)?;
+    File::open(presets_dir.join("CMakePresets.json"))?.read_to_string(&mut s)?;
     let v: Value = serde_json::from_str(&s)?;
     let mut map = HashMap::new();
     if let Some(arr) = v.get("configurePresets").and_then(|x| x.as_array()) {
@@ -156,21 +156,23 @@ fn write_batch_and_run(
 }
 
 pub fn handle_build(path: &str, config: &str) -> Result<()> {
-    // Resolve project dir
+    // Repo root
     let project = PathBuf::from(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+    let components_dir = project.join("components");
+
     let cfg = normalize_config(config);
     let preset = preset_for(cfg);
     let build_dir = build_dir_for(&project, cfg);
 
     // (Re)generate CMake files from triton.json every build
     let root: TritonRoot = read_json(project.join("triton.json"))?;
-    regenerate_root_cmake(&root)?;
+    regenerate_root_cmake(&root)?; // writes components/CMakeLists.txt
     for (name, comp) in &root.components {
-        rewrite_component_cmake(name, &root, comp)?;
+        rewrite_component_cmake(name, &root, comp)?; // writes components/<name>/CMakeLists.txt
     }
 
-    // Ensure CMakePresets.json exists (create if missing)
-    let presets_path = project.join("CMakePresets.json");
+    // Ensure components/CMakePresets.json exists (create if missing)
+    let presets_path = components_dir.join("CMakePresets.json");
     if !presets_path.exists() {
         let text = cmake_presets(&root.app_name, &root.generator, &root.triplet);
         fs::write(&presets_path, text)
@@ -178,20 +180,20 @@ pub fn handle_build(path: &str, config: &str) -> Result<()> {
     }
 
     // Load presets to figure out generator / env
-    let (_v, map) = load_presets(&project)?;
+    let (_v, map) = load_presets(&components_dir)?;
     let mut guard = Vec::new();
     let effective_gen = resolve_generator_for_preset(&map, preset, &mut guard)
         .or_else(|| resolve_generator_for_preset(&map, "default", &mut guard))
         .unwrap_or_else(|| "Ninja".to_string());
 
-    // Resolve portable Ninja if needed
+    // Portable Ninja if needed (next to components/)
     let mut ninja_abs_dir: Option<PathBuf> = None;
     if effective_gen.eq_ignore_ascii_case("ninja") {
-        let dir = ensure_ninja_dir(&project)?;
+        let dir = ensure_ninja_dir(&components_dir)?;
         ninja_abs_dir = Some(dir);
     }
 
-    // Configure if not configured for this generator (cache + buildsystem file)
+    // Configure if not configured for this generator
     if !is_configured_for_generator(&build_dir, &effective_gen) {
         fs::create_dir_all(&build_dir)?;
         let mut configure_line = format!("cmake --preset {}", preset);
@@ -218,10 +220,10 @@ pub fn handle_build(path: &str, config: &str) -> Result<()> {
                      (or run in a Developer Command Prompt)."
                 )
             })?;
-            write_batch_and_run(&project, &vs, ninja_abs_dir.as_deref(), &[configure_line.as_str()])?
+            write_batch_and_run(&components_dir, &vs, ninja_abs_dir.as_deref(), &[configure_line.as_str()])?
         } else {
             let mut cmd = Command::new("cmake");
-            cmd.arg("--preset").arg(preset).current_dir(&project);
+            cmd.arg("--preset").arg(preset).current_dir(&components_dir);
             if let Some(dir) = &ninja_abs_dir {
                 let existing = env::var_os("PATH").unwrap_or_default();
                 let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
@@ -250,14 +252,14 @@ pub fn handle_build(path: &str, config: &str) -> Result<()> {
             )
         })?;
         write_batch_and_run(
-            &project,
+            &components_dir,
             &vs,
             ninja_abs_dir.as_deref(),
             &[&format!("cmake --build --preset={}", preset)],
         )?
     } else {
         let mut b = Command::new("cmake");
-        b.arg("--build").arg(format!("--preset={}", preset)).current_dir(&project);
+        b.arg("--build").arg(format!("--preset={}", preset)).current_dir(&components_dir);
         if let Some(dir) = &ninja_abs_dir {
             let existing = env::var_os("PATH").unwrap_or_default();
             let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
