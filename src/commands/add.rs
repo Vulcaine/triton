@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
@@ -9,148 +9,184 @@ use crate::util::{
     read_json, run, vcpkg_exe_path, write_json_pretty_changed, write_text_if_changed,
 };
 
-/// Parse `"<pkg>"`, `"<pkg> <component>"`, or `"<pkg>-><component>"`.
-fn parse_pkg_and_component<'a>(pkg: &'a str, component_opt: Option<&'a str>) -> (&'a str, Option<&'a str>) {
-    if let Some((p, c)) = pkg.split_once("->") {
-        let p = p.trim();
-        let c = c.trim();
-        if !c.is_empty() {
-            return (p, Some(c));
-        }
-        return (p, None);
-    }
-    (pkg, component_opt.map(|s| s.trim()).filter(|s| !s.is_empty()))
+struct Plan {
+    pkg: String,
+    link_to: Option<String>,
 }
 
-pub fn handle_add(pkg_in: &str, component_opt: Option<&str>, _features: Option<&str>, _host: bool) -> Result<()> {
-    let (pkg, link_to_opt) = parse_pkg_and_component(pkg_in, component_opt);
+fn is_git_token(s: &str) -> bool {
+    s.contains('/') && !s.contains('\\')
+}
 
-    let mut root: TritonRoot = read_json("triton.json")?;
+fn make_plans(mut items: Vec<String>, root: &TritonRoot) -> Vec<Plan> {
+    let mut plans = Vec::<Plan>::new();
+    let mut plain = Vec::<String>::new();
 
-    // Ensure components/ root exists when we might need to create a component
-    if link_to_opt.is_some() {
-        fs::create_dir_all("components")?;
-    }
-
-    // Add dependency to root.deps (either vcpkg name or git repo)
-    let mut dep_name_for_link: Option<String> = None;
-
-    if pkg.contains('/') && !pkg.contains('\\') {
-        // Treat as GitHub "org/repo[@branch]"
-        let (repo, branch) = if let Some((r, b)) = pkg.split_once('@') {
-            (r.to_string(), Some(b.to_string()))
-        } else {
-            (pkg.to_string(), None)
-        };
-        let name = repo.split('/').last().unwrap_or(&repo).to_string();
-        dep_name_for_link = Some(name.clone());
-
-        let third = format!("third_party/{name}");
-        if !Path::new(&third).exists() {
-            fs::create_dir_all("third_party")?;
-            eprintln!("Cloning https://github.com/{repo}.git into {third} …");
-            run("git", &["clone", &format!("https://github.com/{repo}.git"), &third], ".")?;
-            if let Some(br) = &branch {
-                run("git", &["checkout", br], &third)?;
+    for it in items.drain(..) {
+        if let Some((p, c)) = it.split_once("->") {
+            let p = p.trim();
+            let c = c.trim();
+            if !p.is_empty() && !c.is_empty() {
+                plans.push(Plan { pkg: p.to_string(), link_to: Some(c.to_string()) });
+                continue;
             }
         }
+        plain.push(it);
+    }
 
-        if !root
-            .deps
-            .iter()
-            .any(|d| matches!(d, RootDep::Git(g) if g.name == name || g.repo == repo))
-        {
-            root.deps.push(RootDep::Git(GitDep {
-                repo,
-                name: name.clone(),
-                branch,
-                target: None,
-                cmake: vec![],
-            }));
+    if plain.is_empty() {
+        return plans;
+    }
+
+    // trailing component sugar only if last token is an *existing* component
+    let mut global_comp: Option<String> = None;
+    if plain.len() >= 2 {
+        if let Some(last) = plain.last() {
+            if root.components.contains_key(last) {
+                global_comp = Some(last.clone());
+                plain.pop();
+            }
         }
+    }
+
+    for p in plain {
+        plans.push(Plan { pkg: p, link_to: global_comp.clone() });
+    }
+
+    plans
+}
+
+fn ensure_component_scaffold(name: &str) -> Result<()> {
+    let comp_dir = format!("components/{name}");
+    fs::create_dir_all(format!("{comp_dir}/src"))?;
+    fs::create_dir_all(format!("{comp_dir}/include"))?;
+    let cm = format!("{comp_dir}/CMakeLists.txt");
+    if !Path::new(&cm).exists() {
+        write_text_if_changed(&cm, &crate::templates::component_cmakelists())?;
+    }
+    Ok(())
+}
+
+fn add_vcpkg_dep_transactional(root: &TritonRoot, pkg: &str) -> Result<bool> {
+    let mani_path = Path::new("vcpkg.json");
+    let existed_before = mani_path.exists();
+    let prev_text = if existed_before {
+        Some(std::fs::read_to_string(mani_path).unwrap_or_default())
     } else {
-        // vcpkg package name
-        if !root.deps.iter().any(|d| matches!(d, RootDep::Name(n) if n == pkg)) {
-            root.deps.push(RootDep::Name(pkg.to_string()));
-        }
+        None
+    };
 
-        // Ensure vcpkg.json exists and is in sync
-        let mani_path = Path::new("vcpkg.json");
-        if !mani_path.exists() {
-            let empty = serde_json::json!({
-                "name": root.app_name,
-                "version": "0.0.0",
-                "dependencies": []
-            });
-            write_text_if_changed("vcpkg.json", &serde_json::to_string_pretty(&empty)?)?;
-        }
+    if !existed_before {
+        let empty = serde_json::json!({
+            "name": root.app_name,
+            "version": "0.0.0",
+            "dependencies": []
+        });
+        write_text_if_changed("vcpkg.json", &serde_json::to_string_pretty(&empty)?)?;
+    }
 
-        let mut mani: serde_json::Value = read_json("vcpkg.json")?;
-        let deps = mani["dependencies"].as_array_mut().unwrap();
+    let mut mani: serde_json::Value = read_json("vcpkg.json")?;
+    {
+        let deps = mani["dependencies"].as_array_mut().expect("dependencies array");
         if !deps.iter().any(|v| v == pkg) {
             deps.push(serde_json::Value::String(pkg.to_string()));
             write_text_if_changed("vcpkg.json", &serde_json::to_string_pretty(&mani)?)?;
         }
-
-        // vcpkg install (manifest mode)
-        let vcpkg_bin = vcpkg_exe_path();
-        eprintln!("Running vcpkg install (manifest mode)...");
-        run(&vcpkg_bin, &["install"], ".")?;
-
-        // For linking, the link key is the vcpkg package name itself
-        dep_name_for_link = Some(pkg.to_string());
     }
 
-    // Persist deps update first
-    write_json_pretty_changed("triton.json", &root)?;
-
-    // If a component was specified, link it and ensure it exists on disk + metadata
-    if let Some(dest_comp) = link_to_opt {
-        // Ensure component folder + CMakeLists exist (non-destructive)
-        let comp_dir = format!("components/{dest_comp}");
-        fs::create_dir_all(format!("{comp_dir}/src"))?;
-        fs::create_dir_all(format!("{comp_dir}/include"))?;
-        let cm = format!("{comp_dir}/CMakeLists.txt");
-        if !Path::new(&cm).exists() {
-            write_text_if_changed(&cm, &component_cmakelists())?;
+    let vcpkg_bin = vcpkg_exe_path();
+    let res = run(&vcpkg_bin, &["install"], ".");
+    if let Err(e) = res {
+        if let Some(text) = prev_text {
+            write_text_if_changed("vcpkg.json", &text)
+                .context("reverting failed vcpkg.json change")?;
+        } else {
+            let _ = std::fs::remove_file(mani_path);
         }
+        eprintln!("{}", e);
+        eprintln!("vcpkg install failed; not adding '{}' to vcpkg.json.", pkg);
+        return Ok(false);
+    }
 
-        // --- begin mutable borrow scope
-        {
-            // Ensure metadata entry and push link if missing
-            let entry = root
-                .components
-                .entry(dest_comp.to_string())
-                .or_insert(TritonComponent {
-                    kind: "lib".into(),
-                    link: vec![],
-                });
+    Ok(true)
+}
 
-            if let Some(link_key) = &dep_name_for_link {
-                if !entry.link.iter().any(|x| x == link_key) {
-                    entry.link.push(link_key.clone());
+pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Result<()> {
+    let mut root: TritonRoot = read_json("triton.json")?;
+    fs::create_dir_all("components")?; // safe
+
+    let plans = make_plans(items.to_vec(), &root);
+    if plans.is_empty() {
+        anyhow::bail!("Nothing to add. Usage: triton add <pkg...> [component] or pkg->component");
+    }
+
+    for Plan { pkg, link_to } in plans {
+        let mut dep_name_for_link: Option<String> = None;
+
+        if is_git_token(&pkg) {
+            let (repo, branch) = if let Some((r, b)) = pkg.split_once('@') {
+                (r.to_string(), Some(b.to_string()))
+            } else {
+                (pkg.to_string(), None)
+            };
+            let name = repo.split('/').last().unwrap_or(&repo).to_string();
+
+            // clone first; only then persist
+            let third = format!("third_party/{name}");
+            if !Path::new(&third).exists() {
+                fs::create_dir_all("third_party")?;
+                eprintln!("Cloning https://github.com/{repo}.git into {third} …");
+                run("git", &["clone", &format!("https://github.com/{repo}.git"), &third], ".")?;
+                if let Some(br) = &branch {
+                    run("git", &["checkout", br], &third)?;
                 }
             }
-        } // <-- mutable borrow of `root` ends here
 
-        // Persist updated root with new link
-        write_json_pretty_changed("triton.json", &root)?;
+            if !root.deps.iter().any(|d| matches!(d, RootDep::Git(g) if g.name == name || g.repo == repo)) {
+                root.deps.push(RootDep::Git(GitDep {
+                    repo,
+                    name: name.clone(),
+                    branch,
+                    target: None,
+                    cmake: vec![],
+                }));
+                write_json_pretty_changed("triton.json", &root)?;
+            }
 
-        // Re-borrow immutably for codegen
-        let comp_ref = root
-            .components
-            .get(dest_comp)
-            .expect("component should exist after insertion");
+            dep_name_for_link = Some(name);
+        } else {
+            if add_vcpkg_dep_transactional(&root, &pkg)? {
+                if !root.deps.iter().any(|d| matches!(d, RootDep::Name(n) if n == &pkg)) {
+                    root.deps.push(RootDep::Name(pkg.clone()));
+                    write_json_pretty_changed("triton.json", &root)?;
+                }
+                dep_name_for_link = Some(pkg.clone());
+            } else {
+                // vcpkg failed; skip linking
+                continue;
+            }
+        }
 
-        // Regenerate cmake for that component and components root
-        rewrite_component_cmake(dest_comp, &root, comp_ref)?;
-        regenerate_root_cmake(&root)?;
-
-        eprintln!("Added '{}' and linked into component '{}'.", pkg_in, dest_comp);
-    } else {
-        // No component specified: deps updated only
-        regenerate_root_cmake(&root)?; // keep components/CMakeLists.txt in sync
-        eprintln!("Added '{}' to project dependencies (no linking).", pkg_in);
+        if let Some(dest_comp) = link_to.as_deref() {
+            ensure_component_scaffold(dest_comp)?;
+            {
+                let entry = root.components.entry(dest_comp.to_string())
+                    .or_insert(TritonComponent { kind: "lib".into(), link: vec![] });
+                if let Some(link_key) = &dep_name_for_link {
+                    if !entry.link.iter().any(|x| x == link_key) {
+                        entry.link.push(link_key.clone());
+                    }
+                }
+            }
+            write_json_pretty_changed("triton.json", &root)?;
+            let comp_ref = root.components.get(dest_comp).unwrap();
+            rewrite_component_cmake(dest_comp, &root, comp_ref)?;
+            regenerate_root_cmake(&root)?;
+            eprintln!("Added '{}' and linked into component '{}'.", pkg, dest_comp);
+        } else {
+            regenerate_root_cmake(&root)?;
+            eprintln!("Added '{}' to project dependencies (no linking).", pkg);
+        }
     }
 
     Ok(())

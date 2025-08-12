@@ -11,7 +11,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Initialize a project. `triton init demo` creates a new project.
-    /// `triton init .` minimally initializes the current repo (no component scaffold).
+    /// `triton init .` minimally initializes the current folder (no component scaffold).
     Init {
         /// Project name (or '.' for minimal init in current folder)
         name: Option<String>,
@@ -25,40 +25,56 @@ pub enum Commands {
         #[arg(long, default_value = "20")]
         cxx_std: String,
     },
-    /// Add a vcpkg package to a component (creates the component if missing)
+
+    /// Add one or more packages.
+    ///
+    /// Examples:
+    ///   triton add lua sol2
+    ///   triton add lua->demo sol2->demo
+    ///   triton add lua sol2 demo   # if 'demo' is an existing component, link both to it
     Add {
-        pkg: String,
-        #[arg(long, default_value = "app")]
-        component: Option<String>,
+        /// One or more items. Each item may be:
+        /// - "pkg" (vcpkg), "org/repo[@branch]" (git), or "pkg->component" (link sugar).
+        items: Vec<String>,
+
         #[arg(long)]
         features: Option<String>,
         #[arg(long)]
         host: bool,
     },
+
     /// Link component A to component B (target_link_libraries(A PRIVATE B))
     Link {
         /// Either `A B` or `A->B`. If two args are provided, both are used.
         edge: String,
         to: Option<String>,
     },
-     /// Remove a package (or only some features) and unlink it from a component
+
+    /// Remove a package or unlink it from a specific component
+    ///
+    /// - `triton remove <pkg>`: remove from project deps and unlink from all components.
+    /// - `triton remove <pkg> --component X`: only unlink from component X (keep dep).
     Remove {
         pkg: String,
-        #[arg(long, default_value = "app")]
-        component: String,
+        /// If provided, only unlink the pkg from this component.
+        #[arg(long)]
+        component: Option<String>,
         #[arg(long)]
         features: Option<String>,
         #[arg(long)]
         host: bool,
     },
+
     /// Re-generate managed CMake blocks
     Generate,
+
     /// Build
     Build {
         path: String,
         #[arg(long, default_value = "debug")]
         config: String,
     },
+
     /// Run
     Run {
         path: String,

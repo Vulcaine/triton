@@ -13,9 +13,7 @@ use cli::{Cli, Commands};
 use commands::{handle_add, handle_build, handle_init, handle_link, handle_remove, handle_run};
 use std::borrow::Cow;
 
-fn opt_str(opt: &Option<String>) -> Option<&str> {
-    opt.as_deref()
-}
+fn opt_str(opt: &Option<String>) -> Option<&str> { opt.as_deref() }
 
 fn parse_edge<'a>(edge: &'a str, to: &'a Option<String>) -> Result<(Cow<'a, str>, Cow<'a, str>)> {
     if let Some(t) = to.as_ref() {
@@ -31,19 +29,19 @@ fn parse_edge<'a>(edge: &'a str, to: &'a Option<String>) -> Result<(Cow<'a, str>
     anyhow::bail!("Use `triton link A B` or `triton link A->B`")
 }
 
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init { name, triplet, generator, cxx_std } =>
             handle_init(opt_str(&name), &triplet, &generator, &cxx_std),
 
-        Commands::Add { pkg, component, features, host } =>
-            handle_add(&pkg, opt_str(&component), opt_str(&features), host),
+        // multiple items; no default component
+        Commands::Add { items, features, host } =>
+            handle_add(&items, opt_str(&features), host),
 
+        // Remove: optional component; do not default to "app"
         Commands::Remove { pkg, component, features, host } =>
-            handle_remove(&pkg, Some(component.as_str()), opt_str(&features), host),
-
+            handle_remove(&pkg, opt_str(&component), opt_str(&features), host),
 
         Commands::Generate => {
             let root: models::TritonRoot = util::read_json("triton.json")?;
