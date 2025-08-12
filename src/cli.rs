@@ -45,7 +45,7 @@ pub enum Commands {
 
     /// Link component A to component B (target_link_libraries(A PRIVATE B))
     Link {
-        /// Either `A B` or `A->B`. If two args are provided, both are used.
+        /// Either `A B` or `A:B`. If two args are provided, both are used.
         edge: String,
         to: Option<String>,
     },

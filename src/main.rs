@@ -19,14 +19,14 @@ fn parse_edge<'a>(edge: &'a str, to: &'a Option<String>) -> Result<(Cow<'a, str>
     if let Some(t) = to.as_ref() {
         return Ok((Cow::from(edge), Cow::from(t.as_str())));
     }
-    if let Some((a, b)) = edge.split_once("->") {
+    if let Some((a, b)) = edge.split_once(":") {
         let from = a.trim();
         let to = b.trim();
         if !from.is_empty() && !to.is_empty() {
             return Ok((Cow::from(from), Cow::from(to)));
         }
     }
-    anyhow::bail!("Use `triton link A B` or `triton link A->B`")
+    anyhow::bail!("Use `triton link A B` or `triton link A:B`")
 }
 
 fn main() -> Result<()> {
