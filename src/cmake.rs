@@ -38,6 +38,29 @@ pub fn regenerate_root_cmake(_root: &TritonRoot) -> Result<()> {
 }
 
 pub fn rewrite_component_cmake(name: &str, comp: &TritonComponent) -> Result<()> {
+    use regex::Regex;
+    use std::path::Path;
+
+    #[derive(Debug, Clone, serde::Deserialize)]
+    struct ThirdPartyDep {
+        repo: String,
+        name: String,
+        #[serde(default)]
+        target: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
+    }
+
+    fn load_third_party_list(component: &str) -> Vec<ThirdPartyDep> {
+        let p = format!("components/{component}/third_party.json");
+        let path = std::path::Path::new(&p);
+        if path.exists() {
+            crate::util::read_json(path).unwrap_or_default()
+        } else {
+            vec![]
+        }
+    }
+
     let p = format!("components/{name}/CMakeLists.txt");
     let mut cmake = fs::read_to_string(&p).with_context(|| format!("reading {}", p))?;
 
@@ -49,20 +72,74 @@ pub fn rewrite_component_cmake(name: &str, comp: &TritonComponent) -> Result<()>
 
     let mut lines: Vec<String> = Vec::new();
 
-    // Always resolve target name locally so the block is robust
+    // Resolve local target name robustly
     lines.push("# --- triton: resolve local target name ---".into());
     lines.push(r#"if(NOT DEFINED _comp_name)"#.into());
     lines.push(r#"  get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)"#.into());
     lines.push("endif()".into());
     lines.push("".into());
 
-    // 1) Inter-component deps
+    // Inter-component deps first
     for c in &comp.comps {
         lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE {})", c));
     }
 
-    // 2) vcpkg package deps
+    // Third-party vendored deps
+    let third_party = load_third_party_list(name);
+    for tp in &third_party {
+        lines.push(format!(
+            "add_subdirectory(\"${{PROJECT_SOURCE_DIR}}/third_party/{}\" EXCLUDE_FROM_ALL)",
+            tp.name
+        ));
+        if let Some(t) = &tp.target {
+            lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE {})", t));
+        } else {
+            lines.push(format!(
+                "# TODO(triton): set correct target for {} and uncomment next line",
+                tp.repo
+            ));
+            lines.push(format!(
+                "# target_link_libraries(${{_comp_name}} PRIVATE {})",
+                tp.name
+            ));
+        }
+    }
+
+    // Partition vcpkg deps: Boost subports vs others
+    let mut boost_components: Vec<String> = Vec::new();
+    let mut others: Vec<String> = Vec::new();
     for pkg in &comp.deps {
+        let lc = pkg.to_ascii_lowercase();
+        if lc == "boost" {
+            continue;
+        }
+        if lc.starts_with("boost-") {
+            let comp_name = lc.trim_start_matches("boost-").replace('-', "_");
+            boost_components.push(comp_name);
+        } else {
+            others.push(pkg.clone());
+        }
+    }
+    boost_components.sort();
+    boost_components.dedup();
+
+    // Boost group
+    if !boost_components.is_empty() {
+        lines.push(format!(
+            "find_package(Boost CONFIG COMPONENTS {} REQUIRED)",
+            boost_components.join(" ")
+        ));
+        lines.push("target_link_libraries(${_comp_name} PRIVATE Boost::headers)".into());
+        for c in &boost_components {
+            lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE Boost::{} )", c));
+        }
+    } else if comp.deps.iter().any(|d| d.eq_ignore_ascii_case("boost")) {
+        lines.push("find_package(Boost CONFIG REQUIRED)".into());
+        lines.push("target_link_libraries(${_comp_name} PRIVATE Boost::headers)".into());
+    }
+
+    // Other vcpkg deps (as before)
+    for pkg in &others {
         let (find_name, link_targets) = canonical_pkg(pkg);
         let share_key = pkg.to_ascii_lowercase();
 
@@ -85,14 +162,12 @@ pub fn rewrite_component_cmake(name: &str, comp: &TritonComponent) -> Result<()>
             lines.push("# (triton added a generic include+lib fallback below)".into());
         }
 
-        // Fallback: include vcpkg installed include + guess libs from lib/
         lines.push(
             r#"target_include_directories(${_comp_name} PRIVATE "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include")"#.into(),
         );
 
         let guessed = guess_libs(&lib_dir, pkg);
         if guessed.is_empty() {
-            // ESCAPE CMake braces for Rust's format!
             lines.push(format!(
                 "# TODO(triton): could not find config for '{}'; add concrete libs from ${{{{VCPKG_INSTALLED_DIR}}}}/${{{{VCPKG_TARGET_TRIPLET}}}}/lib if needed",
                 pkg
@@ -104,13 +179,13 @@ pub fn rewrite_component_cmake(name: &str, comp: &TritonComponent) -> Result<()>
     }
 
     let block = if lines.is_empty() { "# (none)".to_string() } else { lines.join("\n") };
-
     let re = Regex::new(r"(?s)# ## triton:deps begin.*?# ## triton:deps end").unwrap();
     let replacement = format!("# ## triton:deps begin\n{}\n# ## triton:deps end", block);
-    cmake = re.replace(&cmake, NoExpand(&replacement)).to_string();
+    cmake = re.replace(&cmake, regex::NoExpand(&replacement)).to_string();
     fs::write(&p, cmake)?;
     Ok(())
 }
+
 
 fn has_config_package(share_dir: &Path, pkg_key: &str) -> bool {
     let d = share_dir.join(pkg_key);
