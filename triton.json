@@ -1,0 +1,11 @@
+{
+  "triplet": "x64-windows",
+  "generator": "Ninja",
+  "cxx_std": "20",
+  "components": {
+    "app": {
+      "kind": "exe",
+      "deps": []
+    }
+  }
+}

@@ -1,0 +1,147 @@
+use anyhow::{Context, Result};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+use walkdir::WalkDir;
+
+use crate::models::TritonRoot;
+use crate::util::read_json;
+
+use super::build::handle_build;
+
+fn normalize_config(cfg: &str) -> &'static str {
+    match cfg.to_ascii_lowercase().as_str() {
+        "release" | "rel" => "release",
+        _ => "debug",
+    }
+}
+
+fn exe_name_for(component: &str) -> String {
+    if cfg!(windows) { format!("{component}.exe") } else { component.to_string() }
+}
+
+fn build_dir_for(project: &Path, cfg: &str) -> PathBuf {
+    project.join(format!("build/{}", cfg))
+}
+
+fn cmake_cache_exists(project: &Path, cfg: &str) -> bool {
+    build_dir_for(project, cfg).join("CMakeCache.txt").exists()
+}
+
+fn newest_mtime_in_dirs(dirs: &[&Path], exts: &[&str]) -> SystemTime {
+    let mut newest = UNIX_EPOCH;
+    for d in dirs {
+        if !d.exists() { continue; }
+        for entry in WalkDir::new(d).into_iter().filter_map(|e| e.ok()) {
+            let p = entry.path();
+            if p.is_file() {
+                if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+                    if exts.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+                        if let Ok(meta) = fs::metadata(p) {
+                            if let Ok(mt) = meta.modified() {
+                                if mt > newest { newest = mt; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    newest
+}
+
+fn newest_project_input_mtime(project: &Path) -> SystemTime {
+    // consider source/headers + key config files that trigger rebuild/regenerate
+    let src_exts = ["c","cc","cxx","cpp","hpp","hh","h","hxx","inl","ixx"];
+
+    // Bind PathBufs first to avoid borrowing temporaries
+    let comp_dir = project.join("components");
+    let include_dir = project.join("include");
+    let src_dir = project.join("src");
+
+    let dirs: [&Path; 3] = [
+        comp_dir.as_path(),
+        include_dir.as_path(),
+        src_dir.as_path(),
+    ];
+    let newest_sources = newest_mtime_in_dirs(&dirs, &src_exts);
+
+    let important_files = [
+        project.join("CMakeLists.txt"),
+        project.join("CMakePresets.json"),
+        project.join("triton.json"),
+        project.join("vcpkg.json"),
+    ];
+    let mut newest = newest_sources;
+    for f in &important_files {
+        if let Ok(meta) = fs::metadata(f) {
+            if let Ok(mt) = meta.modified() {
+                if mt > newest { newest = mt; }
+            }
+        }
+    }
+    newest
+}
+
+fn find_executable(project: &Path, cfg: &str, component: Option<&str>) -> Result<PathBuf> {
+    let build_dir = build_dir_for(project, cfg);
+    let want = if let Some(c) = component {
+        exe_name_for(c)
+    } else {
+        let root: TritonRoot = read_json(project.join("triton.json"))?;
+        if let Some((name, _comp)) = root.components.iter().find(|(_, c)| c.kind == "exe") {
+            exe_name_for(name)
+        } else {
+            exe_name_for("app")
+        }
+    };
+
+    for entry in WalkDir::new(&build_dir).follow_links(true).into_iter().filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.is_file() {
+            if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                if fname == want {
+                    return Ok(p.to_path_buf());
+                }
+            }
+        }
+    }
+    anyhow::bail!("executable '{}' not found under {}", want, build_dir.display());
+}
+
+pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[String]) -> Result<()> {
+    let project = PathBuf::from(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+    let cfg = normalize_config(config);
+
+    // Fast path: if exe exists and is newer than inputs, and cache exists -> skip build
+    let need_build = {
+        let cache_ok = cmake_cache_exists(&project, cfg);
+        let exe_path_guess = find_executable(&project, cfg, component).ok();
+        match (cache_ok, exe_path_guess) {
+            (true, Some(exe)) => {
+                let exe_mt = fs::metadata(&exe).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+                let newest_in = newest_project_input_mtime(&project);
+                newest_in > exe_mt
+            }
+            _ => true, // no cache or no exe -> need build
+        }
+    };
+
+    if need_build {
+        handle_build(&project.display().to_string(), cfg)?;
+    }
+
+    // Run (re-find exe in case we just built it)
+    let exe_path = find_executable(&project, cfg, component)?;
+    eprintln!("Running {} …", exe_path.display());
+    let status = Command::new(&exe_path)
+        .args(args)
+        .current_dir(exe_path.parent().unwrap_or(&project))
+        .status()
+        .with_context(|| format!("failed to launch {}", exe_path.display()))?;
+    if !status.success() {
+        anyhow::bail!("program exited with status {:?}", status.code());
+    }
+    Ok(())
+}
