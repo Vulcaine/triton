@@ -16,22 +16,27 @@ pub fn component_cmakelists() -> String {
 # Detect target name from directory
 get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
 
-# If there's a main.cpp, assume executable; else library
-file(GLOB_RECURSE COMP_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
-list(LENGTH COMP_SOURCES _src_len)
-if(_src_len GREATER 0)
+# Collect sources (any C/C++ in src)
+file(GLOB_RECURSE COMP_SOURCES CONFIGURE_DEPENDS
+    "src/*.c" "src/*.cc" "src/*.cxx" "src/*.cpp" "src/*.ixx")
+
+# Rule: a component is an executable ONLY if it has src/main.cpp.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
   add_executable(${_comp_name})
   set(_is_exe ON)
-  target_sources(${_comp_name} PRIVATE ${COMP_SOURCES})
 else()
   add_library(${_comp_name})
   set(_is_exe OFF)
 endif()
 
+if(COMP_SOURCES)
+  target_sources(${_comp_name} PRIVATE ${COMP_SOURCES})
+endif()
+
 target_include_directories(${_comp_name} PRIVATE "include")
 set_property(TARGET ${_comp_name} PROPERTY CXX_STANDARD 20)
 
-# On Windows, copy runtime DLLs beside the executable after build
+# On Windows, copy runtime DLLs beside the executable after build (MSVC, vcpkg, etc.)
 if(WIN32 AND _is_exe)
   add_custom_command(TARGET ${_comp_name} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -48,7 +53,7 @@ if(NOT DEFINED _comp_name)
   get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
 endif()
 
-# (triton injects third_party add_subdirectory, vcpkg finds, and target_link_libraries here)
+# (triton will inject find_package/add_subdirectory/target_link_libraries here)
 
 # ## triton:deps end
 "#

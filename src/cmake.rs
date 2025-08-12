@@ -1,3 +1,4 @@
+// src/cmake.rs
 use anyhow::{Context, Result};
 use crate::models::{GitDep, RootDep, TritonComponent, TritonRoot};
 use crate::templates::components_dir_cmakelists;
@@ -35,7 +36,7 @@ fn emit_git_dep(lines: &mut Vec<String>, g: &GitDep) {
 target_include_directories(${{_comp_name}} PRIVATE \"${{PROJECT_SOURCE_DIR}}/../third_party/{name}/include\")\nendif()",
         name = g.name
     ));
-    // Optional target link
+    // Optional explicit target name
     if let Some(tgt) = &g.target {
         let t = tgt.trim();
         if !t.is_empty() {
@@ -60,9 +61,13 @@ fn gen_git_dep_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
     lines
 }
 
-/// For vcpkg name deps, emit TODO hints only for those **linked** by this component.
+/// For vcpkg name deps, do a quiet best-effort: try `find_package(NAME CONFIG QUIET)`
+/// and then link either `NAME` or `NAME::NAME` if such a target exists.
+/// If nothing matches, emit nothing (no TODOs).
 fn gen_vcpkg_dep_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
     let mut lines: Vec<String> = vec![];
+
+    // set of vcpkg names declared in root.deps
     let vcpkg_names: Vec<&str> = root
         .deps
         .iter()
@@ -71,12 +76,21 @@ fn gen_vcpkg_dep_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String>
 
     for l in &comp.link {
         if vcpkg_names.iter().any(|n| *n == l) {
-            lines.push(format!(
-                "# TODO(triton): add find_package/targets for vcpkg dependency '{}'",
-                l
-            ));
+            // Best-effort generic snippet; harmless if no config/target is present.
+            lines.push(format!("# vcpkg: {}", l));
+            lines.push(format!("find_package({} CONFIG QUIET)", l));
+            lines.push(format!("if(TARGET {0})", l));
+            lines.push(format!("  target_link_libraries(${{_comp_name}} PRIVATE {0})", l));
+            lines.push("elseif(TARGET ${_v} ) # placeholder to keep elseif structure valid".into()); // dummy branch guard
+            // Replace the dummy with a concrete alternative target guess:
+            lines.pop();
+            lines.push(format!("elseif(TARGET {0}::{0})", l));
+            lines.push(format!("  target_link_libraries(${{_comp_name}} PRIVATE {0}::{0})", l));
+            lines.push("endif()".into());
+            lines.push(String::new());
         }
     }
+
     lines
 }
 
@@ -132,10 +146,13 @@ pub fn rewrite_component_cmake(name: &str, root: &TritonRoot, comp: &TritonCompo
         dep_lines.push("".into());
     }
 
-    // vcpkg deps for THIS component (hints)
-    dep_lines.extend(gen_vcpkg_dep_lines(root, comp));
-    if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
-        dep_lines.push("".into());
+    // vcpkg deps for THIS component (quiet best-effort; no TODOs)
+    let vcpkg_lines = gen_vcpkg_dep_lines(root, comp);
+    if !vcpkg_lines.is_empty() {
+        dep_lines.extend(vcpkg_lines);
+        if !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
     }
 
     // Link to other components or Git target names

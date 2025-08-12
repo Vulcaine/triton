@@ -41,7 +41,7 @@ $env:Path += ";$env:USERPROFILE\.cargo\bin"
 triton init demo
 cd demo
 triton add sdl2 glm               # add deps (no linking)
-triton add sdl2->demo             # add+link to component 'demo'
+triton add sdl2:demo             # add+link to component 'demo'
 triton build . --config debug
 triton run . --component demo
 ```
