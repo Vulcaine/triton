@@ -33,7 +33,13 @@ if(COMP_SOURCES)
   target_sources(${_comp_name} PRIVATE ${COMP_SOURCES})
 endif()
 
-target_include_directories(${_comp_name} PRIVATE "include")
+# libs export headers; executables keep them private
+if(_is_exe)
+  target_include_directories(${_comp_name} PRIVATE "include")
+else()
+  target_include_directories(${_comp_name} PUBLIC "include")
+endif()
+
 set_property(TARGET ${_comp_name} PROPERTY CXX_STANDARD 20)
 
 # On Windows, copy runtime DLLs beside the executable after build (MSVC, vcpkg, etc.)

@@ -1,5 +1,6 @@
-// src/cmake.rs
 use anyhow::{Context, Result};
+use std::collections::HashSet;
+
 use crate::models::{GitDep, RootDep, TritonComponent, TritonRoot};
 use crate::templates::components_dir_cmakelists;
 use crate::util::{read_to_string_opt, write_text_if_changed};
@@ -7,42 +8,135 @@ use crate::util::{read_to_string_opt, write_text_if_changed};
 /// Write/refresh components/CMakeLists.txt with managed subdirs
 pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
     let path = "components/CMakeLists.txt";
+
     let mut body = String::new();
     body.push_str(&components_dir_cmakelists());
+
+    // ---- Triton helper block (once) ----
+    body.push_str(r#"
+# === Triton CMake helpers ===
+if(NOT COMMAND triton_try_link_first_new_library_target)
+  function(triton_try_link_first_new_library_target tgt before_list_var)
+    # Link the first NEW library target introduced since BEFORE list
+    get_property(_after GLOBAL PROPERTY TARGETS)
+    set(_linked FALSE)
+    foreach(t IN LISTS _after)
+      list(FIND ${before_list_var} "${t}" _idx)
+      if(_idx EQUAL -1)
+        get_target_property(_type ${t} TYPE)
+        if(_type STREQUAL "STATIC_LIBRARY" OR _type STREQUAL "SHARED_LIBRARY" OR _type STREQUAL "INTERFACE_LIBRARY")
+          target_link_libraries(${tgt} PRIVATE ${t})
+          set(_linked TRUE)
+          break()
+        endif()
+      endif()
+    endforeach()
+    set(_TRITON_LINKED ${_linked} PARENT_SCOPE)
+  endfunction()
+
+  function(triton_find_vcpkg_and_link tgt pkg)
+    # Try multiple casings; diff targets before/after; link the best one.
+    string(TOLOWER "${pkg}" _lp)
+    string(TOUPPER "${pkg}" _up)
+
+    # CamelCase
+    set(_cm "${pkg}")
+    string(REGEX REPLACE "[^A-Za-z0-9]+" ";" _parts "${pkg}")
+    if(_parts)
+      set(_cm "")
+      foreach(p IN LISTS _parts)
+        if(p STREQUAL "") 
+          continue()
+        endif()
+        string(SUBSTRING "${p}" 0 1 _c1)
+        string(TOUPPER "${_c1}" _c1)
+        string(SUBSTRING "${p}" 1 -1 _rest)
+        string(TOLOWER "${_rest}" _rest)
+        set(_cm "${_cm}${_c1}${_rest}")
+      endforeach()
+    endif()
+
+    get_property(_before GLOBAL PROPERTY TARGETS)
+    foreach(_name IN ITEMS "${pkg}" "${_lp}" "${_up}" "${_cm}")
+      if(NOT _name STREQUAL "")
+        find_package(${_name} CONFIG QUIET)
+      endif()
+    endforeach()
+
+    # Prefer canonical imported names, else fall back to first new lib target
+    foreach(_cand IN ITEMS "${pkg}::${pkg}" "${_lp}::${_lp}" "${_up}::${_up}" "${_cm}::${_cm}")
+      if(TARGET ${_cand})
+        target_link_libraries(${tgt} PRIVATE ${_cand})
+        return()
+      endif()
+    endforeach()
+
+    triton_try_link_first_new_library_target(${tgt} _before)
+  endfunction()
+
+  function(triton_add_subdir_and_link tgt path prefer_name)
+    # Add subdir; link prefer_name if it exists; else link first new lib target.
+    get_filename_component(_dir "${path}" NAME)
+    get_property(_before GLOBAL PROPERTY TARGETS)
+    add_subdirectory("${path}" "${CMAKE_CURRENT_BINARY_DIR}/third_party/${_dir}" EXCLUDE_FROM_ALL)
+
+    if(NOT "${prefer_name}" STREQUAL "")
+      if(TARGET ${prefer_name})
+        target_link_libraries(${tgt} PRIVATE ${prefer_name})
+        return()
+      endif()
+      set(_ns "${prefer_name}::${prefer_name}")
+      if(TARGET ${_ns})
+        target_link_libraries(${tgt} PRIVATE ${_ns})
+        return()
+      endif()
+    endif()
+
+    triton_try_link_first_new_library_target(${tgt} _before)
+  endfunction()
+endif()
+"#);
+
+    // ---- Managed subdirectories ----
     body.push_str("\n# Subdirectories (managed)\n");
     body.push_str("# ## triton:components begin\n");
-    for name in root.components.keys() {
+
+    let mut names: Vec<_> = root.components.keys().cloned().collect();
+    names.sort();
+    for name in names {
         body.push_str(&format!("add_subdirectory({})\n", name));
     }
     body.push_str("# ## triton:components end\n");
+
     write_text_if_changed(path, &body).with_context(|| format!("writing {}", path))?;
     Ok(())
 }
 
 fn emit_git_dep(lines: &mut Vec<String>, g: &GitDep) {
-    // Cache entries BEFORE add_subdirectory so the subproject picks them up
     for e in &g.cmake {
         lines.push(format!("set({} {} CACHE {} \"\" FORCE)", e.var, e.val, e.typ));
     }
-    // Paths relative to 'components' project root
+
+    // Add the subdir and auto-link best new library target (or explicit g.target if you set it)
+    let prefer = g.target.as_deref().unwrap_or(&g.name);
     lines.push(format!(
-        "add_subdirectory(\"${{PROJECT_SOURCE_DIR}}/../third_party/{name}\" \
-\"${{PROJECT_BINARY_DIR}}/third_party/{name}\" EXCLUDE_FROM_ALL)",
-        name = g.name
+        "triton_add_subdir_and_link(${{_comp_name}} \"${{PROJECT_SOURCE_DIR}}/../third_party/{name}\" \"{prefer}\")",
+        name = g.name, prefer = prefer
     ));
-    // Convenience include if include/ exists
-    lines.push(format!(
-        "if(EXISTS \"${{PROJECT_SOURCE_DIR}}/../third_party/{name}/include\")\n  \
-target_include_directories(${{_comp_name}} PRIVATE \"${{PROJECT_SOURCE_DIR}}/../third_party/{name}/include\")\nendif()",
-        name = g.name
-    ));
-    // Optional explicit target name
-    if let Some(tgt) = &g.target {
-        let t = tgt.trim();
-        if !t.is_empty() {
-            lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE {t})"));
-        }
-    }
+
+    // (Optional) extra include roots for projects that don’t propagate include dirs correctly:
+    lines.push("set(_triton_git_inc_roots".into());
+    lines.push(format!("  \"${{PROJECT_SOURCE_DIR}}/../third_party/{}/include\"", g.name));
+    lines.push(format!("  \"${{PROJECT_SOURCE_DIR}}/../third_party/{}/filament/include\"", g.name));
+    lines.push(format!("  \"${{PROJECT_SOURCE_DIR}}/../third_party/{}/libs/filament/include\"", g.name));
+    lines.push(")".into());
+    lines.push("foreach(_inc ${_triton_git_inc_roots})".into());
+    lines.push("  if(EXISTS ${_inc})".into());
+    lines.push("    target_include_directories(${_comp_name} PRIVATE ${_inc})".into());
+    lines.push("  endif()".into());
+    lines.push("endforeach()".into());
+    lines.push("unset(_triton_git_inc_roots)".into());
+
     lines.push(String::new());
 }
 
@@ -61,36 +155,31 @@ fn gen_git_dep_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
     lines
 }
 
-/// For vcpkg name deps, do a quiet best-effort: try `find_package(NAME CONFIG QUIET)`
-/// and then link either `NAME` or `NAME::NAME` if such a target exists.
-/// If nothing matches, emit nothing (no TODOs).
+/// Build a unique-in-order vector.
+fn uniq_in_order(items: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut out = Vec::new();
+    for s in items {
+        if seen.insert(s.clone()) {
+            out.push(s);
+        }
+    }
+    out
+}
+
 fn gen_vcpkg_dep_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
+    let vcpkg_names: Vec<&str> = root.deps.iter().filter_map(|d| {
+        if let RootDep::Name(n) = d { Some(n.as_str()) } else { None }
+    }).collect();
+
     let mut lines: Vec<String> = vec![];
-
-    // set of vcpkg names declared in root.deps
-    let vcpkg_names: Vec<&str> = root
-        .deps
-        .iter()
-        .filter_map(|d| if let RootDep::Name(n) = d { Some(n.as_str()) } else { None })
-        .collect();
-
     for l in &comp.link {
         if vcpkg_names.iter().any(|n| *n == l) {
-            // Best-effort generic snippet; harmless if no config/target is present.
             lines.push(format!("# vcpkg: {}", l));
-            lines.push(format!("find_package({} CONFIG QUIET)", l));
-            lines.push(format!("if(TARGET {0})", l));
-            lines.push(format!("  target_link_libraries(${{_comp_name}} PRIVATE {0})", l));
-            lines.push("elseif(TARGET ${_v} ) # placeholder to keep elseif structure valid".into()); // dummy branch guard
-            // Replace the dummy with a concrete alternative target guess:
-            lines.pop();
-            lines.push(format!("elseif(TARGET {0}::{0})", l));
-            lines.push(format!("  target_link_libraries(${{_comp_name}} PRIVATE {0}::{0})", l));
-            lines.push("endif()".into());
+            lines.push(format!("triton_find_vcpkg_and_link(${{_comp_name}} \"{}\")", l));
             lines.push(String::new());
         }
     }
-
     lines
 }
 
@@ -146,7 +235,7 @@ pub fn rewrite_component_cmake(name: &str, root: &TritonRoot, comp: &TritonCompo
         dep_lines.push("".into());
     }
 
-    // vcpkg deps for THIS component (quiet best-effort; no TODOs)
+    // vcpkg deps for THIS component (quiet, deduped)
     let vcpkg_lines = gen_vcpkg_dep_lines(root, comp);
     if !vcpkg_lines.is_empty() {
         dep_lines.extend(vcpkg_lines);
