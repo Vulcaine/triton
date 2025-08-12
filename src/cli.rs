@@ -36,6 +36,16 @@ pub enum Commands {
         from: String,
         to: String,
     },
+     /// Remove a package (or only some features) and unlink it from a component
+    Remove {
+        pkg: String,
+        #[arg(long, default_value = "app")]
+        component: String,
+        #[arg(long)]
+        features: Option<String>,
+        #[arg(long)]
+        host: bool,
+    },
     /// Re-generate managed CMake blocks
     Generate,
     /// Build

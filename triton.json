@@ -5,7 +5,10 @@
   "components": {
     "app": {
       "kind": "exe",
-      "deps": []
+      "deps": [
+        "boost"
+      ],
+      "comps": []
     }
   }
 }

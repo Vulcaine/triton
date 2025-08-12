@@ -3,14 +3,16 @@ use clap::Parser;
 
 mod cli;
 mod cmake;
-mod commands; // re-exports handlers
+mod commands;
 mod models;
 mod tools;
 mod templates;
 mod util;
 
 use cli::{Cli, Commands};
-use commands::{handle_add, handle_build, handle_generate, handle_init, handle_link, handle_run};
+use commands::{
+    handle_add, handle_build, handle_generate, handle_init, handle_link, handle_remove, handle_run,
+};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -20,6 +22,9 @@ fn main() -> Result<()> {
 
         Commands::Add { pkg, component, features, host } =>
             handle_add(&pkg, &component, features.as_deref(), host),
+
+        Commands::Remove { pkg, component, features, host } =>
+            handle_remove(&pkg, &component, features.as_deref(), host),
 
         Commands::Link { from, to } =>
             handle_link(&from, &to),
