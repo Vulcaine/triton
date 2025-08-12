@@ -1,6 +1,6 @@
 # 🔱 Triton
 
-> Tiny, easy-to-use C++ project manager that wires up **CMake + vcpkg** while keeping a clean, modular layout.
+Tiny, easy-to-use C++ project manager that wires up **CMake + vcpkg** while keeping a clean, modular layout.
 
 ## ✨ Highlights
 
