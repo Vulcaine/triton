@@ -29,7 +29,7 @@ pub struct GitDep {
     #[serde(default)]
     pub cmake: Vec<CMakeOverride>,
 
-    /// Kept for backward compat (not used by new flow).
+    /// Back-compat (unused by new flow)
     #[serde(default)]
     pub target: Option<String>,
 }
@@ -57,6 +57,10 @@ pub struct TritonComponent {
     pub kind: String, // "exe" | "lib"
     #[serde(default)]
     pub link: Vec<LinkEntry>,
+    /// Preprocessor defines to apply to this component (consumer).
+    /// Aliases let users write "define" or "definitions" too.
+    #[serde(default, alias = "define", alias = "definitions")]
+    pub defines: Vec<String>,
 }
 
 /// Allow forms inside `components.<name>.link`:

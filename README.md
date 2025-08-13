@@ -116,8 +116,8 @@ If you need multiple filament targets, use:
 
 ```json
 "cmake": [
-  { "var": "FILAMENT_SOME_OPTION", "val": "ON",  "typ": "BOOL"   },
-  { "var": "CMAKE_POLICY_DEFAULT_CMP0091", "val": "NEW", "typ": "STRING" }
+  "FILAMENT_SOME_OPTION=ON"
+  "CMAKE_POLICY_DEFAULT_CMP0091=NEW"
 ]
 ```
 

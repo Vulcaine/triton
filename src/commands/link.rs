@@ -35,6 +35,7 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
                 TritonComponent {
                     kind: "lib".into(),
                     link: vec![],
+                    defines: vec![]
                 },
             );
         }

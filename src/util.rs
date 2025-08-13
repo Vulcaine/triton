@@ -20,12 +20,10 @@ pub fn vcpkg_exe_path() -> String {
     p.to_string_lossy().to_string()
 }
 
-/// Read a file to string, returning `None` if it doesn't exist or can't be read.
 pub fn read_to_string_opt<P: AsRef<Path>>(p: P) -> Option<String> {
     fs::read_to_string(p.as_ref()).ok()
 }
 
-/// Write text only if absent or different; returns what happened.
 pub fn write_text_if_changed<P: AsRef<Path>>(p: P, content: &str) -> Result<Change> {
     let p = p.as_ref();
     if !p.exists() {
@@ -42,7 +40,6 @@ pub fn write_text_if_changed<P: AsRef<Path>>(p: P, content: &str) -> Result<Chan
     }
 }
 
-/// JSON pretty-print writer on top of `write_text_if_changed`.
 pub fn write_json_pretty_changed<P: AsRef<Path>, T: ?Sized + Serialize>(p: P, value: &T) -> Result<Change> {
     let s = serde_json::to_string_pretty(value)?;
     write_text_if_changed(p, &s)
@@ -66,9 +63,8 @@ pub fn run(cmd: &str, args: &[&str], cwd: &str) -> Result<()> {
     Ok(())
 }
 
-/* ------------------------- new shared helpers ------------------------- */
+/* ------------------------- shared helpers used by cmake.rs ------------------------- */
 
-/// Ensure a component's folder layout exists and create `CMakeLists.txt` if missing.
 pub fn ensure_component_scaffold(name: &str) -> Result<()> {
     let base = format!("components/{name}");
     fs::create_dir_all(format!("{base}/src"))?;
@@ -81,7 +77,6 @@ pub fn ensure_component_scaffold(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Return true if `name` is one of the project deps (vcpkg or git).
 pub fn is_dep(root: &TritonRoot, name: &str) -> bool {
     root.deps.iter().any(|d| match d {
         RootDep::Name(n) => n == name,
@@ -89,10 +84,35 @@ pub fn is_dep(root: &TritonRoot, name: &str) -> bool {
     })
 }
 
-/// Returns true if component's link list already contains an entry that normalizes to `want_name`.
-pub fn has_link_to_name(comp: &TritonComponent, want_name: &str) -> bool {
+pub fn has_link_to_name(comp: &TritonComponent, want: &str) -> bool {
     comp.link.iter().any(|e| {
         let (n, _pkg, _tgt) = e.normalize();
-        n == want_name
+        n == want
     })
+}
+
+pub fn cmake_quote(val: &str) -> String {
+    let s = val.trim().replace('"', "\\\"");
+    format!("\"{}\"", s)
+}
+
+pub fn infer_cmake_type(val: &str) -> &'static str {
+    match val.to_ascii_uppercase().as_str() {
+        "ON" | "OFF" | "TRUE" | "FALSE" | "YES" | "NO" => "BOOL",
+        _ => "STRING",
+    }
+}
+
+pub fn split_kv(raw: &str) -> (String, String) {
+    if let Some(idx) = raw.find('=') {
+        let (k, v) = raw.split_at(idx);
+        let key = k.trim().to_string();
+        let mut val = v[1..].trim().to_string();
+        if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
+            val = val[1..val.len() - 1].to_string();
+        }
+        (key, if val.is_empty() { "ON".into() } else { val })
+    } else {
+        (raw.trim().to_string(), "ON".to_string())
+    }
 }

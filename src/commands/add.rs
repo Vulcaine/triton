@@ -2,10 +2,8 @@ use anyhow::Result;
 use std::fs;
 use std::path::Path;
 
-use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::{GitDep, LinkEntry, RootDep, TritonComponent, TritonRoot};
-use crate::templates::component_cmakelists;
-use crate::util::{read_json, run, vcpkg_exe_path, write_json_pretty_changed, write_text_if_changed};
+use crate::util::{read_json, run, write_json_pretty_changed, write_text_if_changed};
 
 /// Parse `"<pkg>"`, `"<pkg> <component>"`, or `"<pkg>:<component>"`.
 fn parse_pkg_and_component<'a>(pkg: &'a str, component_opt: Option<&'a str>) -> (&'a str, Option<&'a str>) {
@@ -56,7 +54,7 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
                     write_text_if_changed(&cm, &crate::templates::component_cmakelists())?;
                 }
                 let entry = root.components.entry(dest.to_string())
-                    .or_insert(TritonComponent { kind: "lib".into(), link: vec![] });
+                    .or_insert(TritonComponent { kind: "lib".into(), link: vec![], defines: vec![] });
                 if !entry.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == &name)) {
                     entry.link.push(LinkEntry::Name(name));
                 }
@@ -90,7 +88,7 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
                     write_text_if_changed(&cm, &crate::templates::component_cmakelists())?;
                 }
                 let entry = root.components.entry(dest.to_string())
-                    .or_insert(TritonComponent { kind: "lib".into(), link: vec![] });
+                    .or_insert(TritonComponent { kind: "lib".into(), link: vec![], defines: vec![]  });
                 if !entry.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == pkg)) {
                     entry.link.push(LinkEntry::Name(pkg.to_string()));
                 }
