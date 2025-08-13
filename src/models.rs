@@ -8,7 +8,7 @@ pub struct TritonRoot {
     pub generator: String,
     pub cxx_std: String,
     pub deps: Vec<RootDep>,
-    pub components: std::collections::BTreeMap<String, TritonComponent>,
+    pub components: BTreeMap<String, TritonComponent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,10 +24,23 @@ pub struct GitDep {
     pub name: String,
     #[serde(default)]
     pub branch: Option<String>,
+
+    /// Accept both old structured entries and new "VAR=VALUE" strings.
+    #[serde(default)]
+    pub cmake: Vec<CMakeOverride>,
+
+    /// Kept for backward compat (not used by new flow).
     #[serde(default)]
     pub target: Option<String>,
-    #[serde(default)]
-    pub cmake: Vec<CMakeCacheEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CMakeOverride {
+    /// Simple "VAR=VALUE" form (preferred).
+    KV(String),
+    /// Backward-compatible structured form.
+    Entry(CMakeCacheEntry),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -35,7 +48,7 @@ pub struct CMakeCacheEntry {
     pub var: String,
     pub val: String,
     #[serde(default = "default_cache_type")]
-    pub typ: String,
+    pub typ: String, // Usually "BOOL" or "STRING"
 }
 fn default_cache_type() -> String { "STRING".into() }
 
@@ -49,9 +62,9 @@ pub struct TritonComponent {
 /// Allow forms inside `components.<name>.link`:
 /// 1) "sdl2"
 /// 2) { "name": "rmlui", "package": "RmlUi", "target": "RmlUi::RmlUi" }
-/// 3) { "rmlui": { "package": "RmlUi", "target": "RmlUi::RmlUi" } }  (shorthand)
-/// 4) { "name": "filament", "targets": ["filament","utils","math"] }  (multi-target)
-/// 5) { "filament": { "targets": ["filament","utils","math"] } }      (shorthand)
+/// 3) { "rmlui": { "package": "RmlUi", "target": "RmlUi::RmlUi" } }
+/// 4) { "name": "filament", "targets": ["filament","utils","math"] }
+/// 5) { "filament": { "targets": ["filament","utils","math"] } }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LinkEntry {
@@ -82,7 +95,6 @@ pub struct LinkHint {
 
 impl LinkEntry {
     /// Canonicalize any variant into (name, package_hint, target_hint)
-    /// If multiple targets are provided, this returns the first as `target_hint`.
     pub fn normalize(&self) -> (String, Option<String>, Option<String>) {
         match self {
             LinkEntry::Name(n) => (n.clone(), None, None),
@@ -102,20 +114,15 @@ impl LinkEntry {
     }
 
     /// Return all explicit targets requested (single or multiple).
-    /// Empty if none specified.
     pub fn all_targets(&self) -> Vec<String> {
         match self {
             LinkEntry::Name(_) => Vec::new(),
             LinkEntry::Named { target, targets, .. } => {
                 let mut out = Vec::new();
-                if let Some(t) = target {
-                    out.push(t.clone());
-                }
+                if let Some(t) = target { out.push(t.clone()); }
                 if let Some(ts) = targets {
                     for t in ts {
-                        if !out.iter().any(|x| x == t) {
-                            out.push(t.clone());
-                        }
+                        if !out.iter().any(|x| x == t) { out.push(t.clone()); }
                     }
                 }
                 out
@@ -126,9 +133,7 @@ impl LinkEntry {
                     if let Some(t) = &v.target { out.push(t.clone()); }
                     if let Some(ts) = &v.targets {
                         for t in ts {
-                            if !out.iter().any(|x| x == t) {
-                                out.push(t.clone());
-                            }
+                            if !out.iter().any(|x| x == t) { out.push(t.clone()); }
                         }
                     }
                     out

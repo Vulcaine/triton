@@ -67,12 +67,16 @@ triton generate                   # write/refresh managed CMake blocks
   "deps": [
     "sdl2",
     "glm",
-    { "repo": "google/filament", "name": "filament", "branch": null, "target": null, "cmake": [] }
+    { "repo": "google/filament", "name": "filament", "branch": null, "cmake": [] }
   ],
   "components": {
     "demo": {
       "kind": "exe",
-      "link": ["sdl2", "glm", "filament"]
+      "link": [
+        "sdl2",
+        "glm",
+        { "name": "filament", "targets": ["filament"] }
+      ]
     },
     "core": {
       "kind": "lib",
@@ -80,6 +84,11 @@ triton generate                   # write/refresh managed CMake blocks
     }
   }
 }
+```
+
+If you need multiple filament targets, use:
+```json
+{ "name": "filament", "targets": ["filament", "utils", "math"] }
 ```
 
 ### Top-level fields
@@ -100,10 +109,17 @@ triton generate                   # write/refresh managed CMake blocks
 |---------|----------|-----------------------|-------------------------------------------------------------------------|
 | `repo`  | ✓ (git)  | `"google/filament"`   | GitHub org/repo                                                         |
 | `name`  | ✓ (git)  | `"filament"`          | Local folder/dep name (used for linking & `third_party/<name>`)        |
-| `branch`| –        | `"v3.0.0"`            | Optional branch/tag                                                     |
-| `target`| –        | `"filament"`          | Optional CMake target to link explicitly                                |
+| `branch`| –        | `"v3.0.0"`            | Optional branch/tag                                                     |                             |
 | `cmake` | –        | `["-DFILAMENT=ON"]`   | Optional list of cache entries injected before `add_subdirectory`       |
 
+**`cmake` entry format (structured):**
+
+```json
+"cmake": [
+  { "var": "FILAMENT_SOME_OPTION", "val": "ON",  "typ": "BOOL"   },
+  { "var": "CMAKE_POLICY_DEFAULT_CMP0091", "val": "NEW", "typ": "STRING" }
+]
+```
 
 ### components entries
 

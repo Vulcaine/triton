@@ -1,7 +1,38 @@
 use anyhow::{Context, Result};
-use crate::models::{GitDep, LinkEntry, RootDep, TritonComponent, TritonRoot};
+use crate::models::{GitDep, CMakeOverride, RootDep, TritonComponent, TritonRoot};
 use crate::templates::components_dir_cmakelists;
 use crate::util::{read_to_string_opt, write_text_if_changed};
+
+fn cmake_quote(val: &str) -> String {
+    // Quote and escape internal quotes for safe CMake
+    let mut s = val.replace('"', "\\\"");
+    format!("\"{}\"", s)
+}
+
+fn infer_cmake_type(val: &str) -> &'static str {
+    match val.to_ascii_uppercase().as_str() {
+        "ON" | "OFF" | "TRUE" | "FALSE" | "YES" | "NO" => "BOOL",
+        _ => "STRING",
+    }
+}
+
+fn split_kv(raw: &str) -> (String, String) {
+    if let Some(idx) = raw.find('=') {
+        let (k, v) = raw.split_at(idx);
+        let mut key = k.trim().to_string();
+        let mut val = v[1..].trim().to_string();
+        // Strip surrounding quotes if user wrote VAR="VALUE"
+        if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
+            val = val[1..val.len()-1].to_string();
+        }
+        if key.is_empty() { key = raw.trim().to_string(); }
+        if val.is_empty() { val = "ON".to_string(); } // sane default
+        (key, val)
+    } else {
+        // No '=' provided -> treat as boolean ON
+        (raw.trim().to_string(), "ON".to_string())
+    }
+}
 
 /// Write/refresh components/CMakeLists.txt with managed helpers + subdirs
 pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
@@ -87,16 +118,13 @@ if(NOT COMMAND triton_find_vcpkg_and_link_strict)
 
   # One function to rule them all
   function(triton_find_vcpkg_and_link_strict tgt pkg)
-    # Snapshot "before"
     _triton_dir_targets(_before_bs _before_imp)
 
-    # Try config first; if that didn't mark FOUND, try module
     find_package(${pkg} CONFIG QUIET)
     if(NOT ${pkg}_FOUND)
       find_package(${pkg} QUIET)
     endif()
 
-    # What targets did this introduce?
     _triton_new_targets(_new _before_bs _before_imp)
     list(LENGTH _new _n)
     if(_n EQUAL 1)
@@ -110,7 +138,6 @@ if(NOT COMMAND triton_find_vcpkg_and_link_strict)
 Please specify an explicit mapping in triton.json: { \"name\": \"${pkg}\", \"package\": \"<Pkg>\", \"target\": \"<Pkg::Target>\" }")
     endif()
 
-    # No targets? Likely a Find-module with variables only (e.g. Lua, ZLIB)
     string(REGEX REPLACE "[^A-Za-z0-9]" "_" _pfx "${pkg}")
     string(TOUPPER "${_pfx}" _PFX)
     _triton_make_iface_from_module_vars(_synth "${pkg}" "${_PFX}")
@@ -121,20 +148,14 @@ Please specify an explicit mapping in triton.json: { \"name\": \"${pkg}\", \"pac
 
     message(FATAL_ERROR
 "triton: could not determine a target for package '${pkg}'.
-No targets appeared and no module variables like ${_PFX}_INCLUDE_DIR(S)/${_PFX}_LIBRARIES were found.
-Tips:
-  * Ensure the vcpkg toolchain is active (CMAKE_TOOLCHAIN_FILE -> vcpkg.cmake), and the port is installed.
-  * Set VCPKG_MANIFEST_DIR to '${CMAKE_SOURCE_DIR}/..' if your vcpkg.json is in the repo root.
-  * Or add an explicit mapping in triton.json.")
+No targets appeared and no module variables like ${_PFX}_INCLUDE_DIR(S)/${_PFX}_LIBRARIES were found.")
   endfunction()
 
-  # Git subdir helper (deduplicated): add once globally and link one new/unique target.
   function(triton_add_subdir_and_link_strict tgt path hint)
     get_filename_component(_abs "${path}" ABSOLUTE)
     get_filename_component(_dir "${_abs}" NAME)
     set(_bin "${CMAKE_BINARY_DIR}/third_party/${_dir}")
 
-    # Check global added list
     get_property(_added GLOBAL PROPERTY TRITON_ADDED_SUBDIRS)
     if(NOT _added)
       set(_added "")
@@ -144,11 +165,9 @@ Tips:
     _triton_dir_targets(_before_bs _before_imp)
     if(_ix EQUAL -1)
       add_subdirectory("${_abs}" "${_bin}" EXCLUDE_FROM_ALL)
-      # Track globally to avoid re-adding from other components
       set_property(GLOBAL PROPERTY TRITON_ADDED_SUBDIRS "${_added};${_abs}|${_bin}")
     endif()
 
-    # Prefer "new targets" detection (if we just added it here)
     _triton_new_targets(_new _before_bs _before_imp)
     list(LENGTH _new _cnt)
     if(_cnt EQUAL 1)
@@ -162,7 +181,6 @@ Tips:
 Please set the 'target' for git dep '${hint}' in triton.json.")
     endif()
 
-    # Fallback: scan libraries under that source tree
     get_property(_all GLOBAL PROPERTY TARGETS)
     set(_cand "")
     foreach(t IN LISTS _all)
@@ -177,14 +195,12 @@ Please set the 'target' for git dep '${hint}' in triton.json.")
     list(LENGTH _cand _c)
     if(_c EQUAL 0)
       message(FATAL_ERROR
-"triton: no library targets were created by '${_abs}'.
-Please specify which to link via 'target' in triton.json for git dep '${hint}'.")
+"triton: no library targets were created by '${_abs}'.")
     elseif(_c EQUAL 1)
       list(GET _cand 0 _t)
       target_link_libraries(${tgt} PRIVATE ${_t})
       return()
     else()
-      # Try to narrow using the hint
       string(TOLOWER "${hint}" _h)
       set(_both "")
       foreach(t IN LISTS _cand)
@@ -202,8 +218,7 @@ Please specify which to link via 'target' in triton.json for git dep '${hint}'."
       endif()
       message(FATAL_ERROR
 "triton: multiple library targets live under '${_abs}':
-  ${_cand}
-Please set the 'target' for git dep '${hint}' in triton.json.")
+  ${_cand}")
     endif()
   endfunction()
 
@@ -222,10 +237,25 @@ endif()
 }
 
 fn emit_git_dep(lines: &mut Vec<String>, g: &GitDep) {
-    // Forward any cache vars first
-    for e in &g.cmake {
-        lines.push(format!("set({} {} CACHE {} \"\" FORCE)", e.var, e.val, e.typ));
+    // Forward any cache overrides first
+    for ov in &g.cmake {
+        match ov {
+            CMakeOverride::Entry(e) => {
+                let ty = if e.typ.is_empty() { "STRING" } else { e.typ.as_str() };
+                let val_q = cmake_quote(&e.val);
+                lines.push(format!("set({} {} CACHE {} \"\" FORCE)", e.var, val_q, ty));
+            }
+            CMakeOverride::KV(raw) => {
+                if raw.trim().is_empty() { continue; }
+                let (var, val) = split_kv(raw);
+                if var.is_empty() { continue; }
+                let ty = infer_cmake_type(&val);
+                let val_q = cmake_quote(&val);
+                lines.push(format!("set({} {} CACHE {} \"\" FORCE)", var, val_q, ty));
+            }
+        }
     }
+
     // Always resolve against repo root: components/.. == root/
     let prefer = g.name.as_str();
     lines.push(format!(
