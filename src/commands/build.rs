@@ -13,18 +13,24 @@ use crate::templates::cmake_presets;
 use crate::tools::ensure_ninja_dir;
 use crate::util::read_json;
 
-fn normalize_config(cfg: &str) -> &'static str {
-    match cfg.to_ascii_lowercase().as_str() {
-        "release" | "rel" => "release",
+pub fn normalize_config(cfg: &str) -> &'static str {
+    match cfg.trim().to_ascii_lowercase().as_str() {
+        "release" | "rel" | "r"   => "release",
+        "debug"   | "dbg" | "d"   => "debug",
         _ => "debug",
     }
 }
-fn preset_for(cfg: &str) -> &'static str {
-    if cfg == "release" { "release" } else { "debug" }
-}
-fn build_dir_for(project: &Path, cfg: &str) -> PathBuf { project.join(format!("build/{}", cfg)) }
 
-fn is_configured_for_generator(build_dir: &Path, generator: &str) -> bool {
+pub fn preset_for(cfg: &str) -> &'static str {
+    match normalize_config(cfg) {
+        "release" => "release",
+        _ => "debug",
+    }
+}
+
+pub fn build_dir_for(project: &Path, cfg: &str) -> PathBuf { project.join(format!("build/{}", cfg)) }
+
+pub fn is_configured_for_generator(build_dir: &Path, generator: &str) -> bool {
     let cache = build_dir.join("CMakeCache.txt");
     if !cache.exists() {
         return false;
@@ -38,7 +44,7 @@ fn is_configured_for_generator(build_dir: &Path, generator: &str) -> bool {
     true
 }
 
-fn load_presets(presets_dir: &Path) -> Result<(Value, HashMap<String, Value>)> {
+pub fn load_presets(presets_dir: &Path) -> Result<(Value, HashMap<String, Value>)> {
     let mut s = String::new();
     File::open(presets_dir.join("CMakePresets.json"))?.read_to_string(&mut s)?;
     let v: Value = serde_json::from_str(&s)?;
@@ -53,7 +59,7 @@ fn load_presets(presets_dir: &Path) -> Result<(Value, HashMap<String, Value>)> {
     Ok((v, map))
 }
 
-fn resolve_generator_for_preset(
+pub fn resolve_generator_for_preset(
     m: &HashMap<String, Value>,
     start: &str,
     guard: &mut Vec<String>,

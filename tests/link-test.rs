@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use tempfile::tempdir;
 
 use triton::handle_link;
@@ -95,7 +95,7 @@ fn link_dep_into_component_adds_dep_and_generates_cmake() {
     let proj: TritonRoot = read_json("triton.json").unwrap();
     let core = proj.components.get("Core").expect("Core exists");
     assert!(core.link.iter().any(|e| {
-        let (n, _, _) = e.normalize();
+        let (n, _) = e.normalize();
         n == "glm"
     }), "Core should link to glm");
 
@@ -139,13 +139,13 @@ fn link_component_to_component_is_rhs_directional() {
     let proj: TritonRoot = read_json("triton.json").unwrap();
     let game = proj.components.get("Game").expect("Game exists");
     assert!(game.link.iter().any(|e| {
-        let (n, _, _) = e.normalize();
+        let (n, _) = e.normalize();
         n == "Engine"
     }), "Game should depend on Engine");
 
     let engine = proj.components.get("Engine").unwrap();
     assert!(!engine.link.iter().any(|e| {
-        let (n, _, _) = e.normalize();
+        let (n, _) = e.normalize();
         n == "Game"
     }), "Engine must not depend on Game");
 
@@ -186,7 +186,7 @@ fn linking_is_idempotent() {
     let proj: TritonRoot = read_json("triton.json").unwrap();
     let b = proj.components.get("B").unwrap();
     let count = b.link.iter().filter(|e| {
-        let (n, _, _) = e.normalize();
+        let (n, _) = e.normalize();
         n == "A"
     }).count();
     assert_eq!(count, 1, "Link A should appear exactly once in B.link");
