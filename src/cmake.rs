@@ -345,7 +345,16 @@ fn gen_component_link_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<St
     for ent in &comp.link {
         let (name, _pkg, _tgt) = ent.normalize();
         if root.components.contains_key(&name) {
+            // 1) Link the sibling component target
             lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE {name})"));
+
+            // 2) Safety fallback: also add the sibling's include/ if it exists.
+            //    This covers older components whose template used PRIVATE includes,
+            //    and guarantees headers are visible even if the producer forgot PUBLIC.
+            lines.push(format!(
+                "if(EXISTS \"${{CMAKE_SOURCE_DIR}}/{n}/include\")\n  target_include_directories(${{_comp_name}} PRIVATE \"${{CMAKE_SOURCE_DIR}}/{n}/include\")\nendif()",
+                n = name
+            ));
         }
     }
     lines
