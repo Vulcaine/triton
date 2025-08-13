@@ -119,7 +119,7 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
     root.cxx_std = cxx_std.to_string();
     root.deps = Vec::<RootDep>::new();
     root.components
-        .insert(app_name.clone(), TritonComponent { kind: "exe".into(), link: vec![], defines: vec![] });
+        .insert(app_name.clone(), TritonComponent { kind: "exe".into(), link: vec![], defines: vec![], exports: vec![] });
 
     changes.push(("triton.json".into(), write_json_pretty_changed("triton.json", &root)?));
 

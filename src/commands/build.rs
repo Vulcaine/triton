@@ -1,10 +1,9 @@
-// src/commands/build.rs
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
@@ -155,7 +154,7 @@ fn write_batch_and_run(
     Ok(status)
 }
 
-pub fn handle_build(path: &str, config: &str) -> Result<()> {
+pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Result<()> {
     // Repo root
     let project = PathBuf::from(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
     let components_dir = project.join("components");
@@ -163,6 +162,37 @@ pub fn handle_build(path: &str, config: &str) -> Result<()> {
     let cfg = normalize_config(config);
     let preset = preset_for(cfg);
     let build_dir = build_dir_for(&project, cfg);
+
+    // --clean / --cleanf
+    if (clean || cleanf) && build_dir.exists() {
+        if cleanf {
+            eprintln!("Force cleaning: {}", build_dir.display());
+            fs::remove_dir_all(&build_dir)
+                .with_context(|| format!("removing {}", build_dir.display()))?;
+        } else if clean {
+            eprintln!("About to remove the build directory:");
+            eprintln!("  {}", build_dir.display());
+            eprintln!("Proceed? [y/N]  (Ctrl+C to abort)");
+            eprint!("> ");
+            io::stdout().flush().ok();
+
+            let mut line = String::new();
+            if io::stdin().read_line(&mut line).is_ok() {
+                let ans = line.trim().to_ascii_lowercase();
+                if ans == "y" || ans == "yes" {
+                    fs::remove_dir_all(&build_dir)
+                        .with_context(|| format!("removing {}", build_dir.display()))?;
+                    eprintln!("Removed {}", build_dir.display());
+                } else {
+                    eprintln!("Clean aborted; continuing without deleting.");
+                }
+            } else {
+                eprintln!("(no input) Clean aborted; continuing without deleting.");
+            }
+        }
+    } else if (clean || cleanf) && !build_dir.exists() {
+        eprintln!("Nothing to clean ({} does not exist).", build_dir.display());
+    }
 
     // (Re)generate CMake files from triton.json every build
     let root: TritonRoot = read_json(project.join("triton.json"))?;

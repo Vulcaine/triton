@@ -1,11 +1,27 @@
-# === Triton CMake helpers (simple & strict) ===
-# CMake >= 3.7: use DIRECTORY properties to diff targets introduced by find_package/add_subdirectory.
-# Also track a GLOBAL list (TRITON_ADDED_SUBDIRS) to avoid re-adding the same git subdir.
-if(NOT COMMAND triton_find_vcpkg_and_link_strict)
+# === Triton CMake helpers (simple & strict) ===================================
+
+# Global norms (apply once for the whole configure)
+if (MSVC)
+  # Prefer the DLL runtime everywhere (/MD, /MDd)
+  if (NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY
+        "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        CACHE STRING "" FORCE)
+  endif()
+  # Proper exception unwinding (silences C4530)
+  add_compile_options(/EHsc)
+endif()
+
+# On Windows, strongly prefer Win32 threads rather than pthreads
+set(THREADS_PREFER_PTHREAD_FLAG OFF CACHE BOOL "" FORCE)
+
+# ==============================================================================
+# Only define the helpers once per configure
+if (NOT COMMAND triton_find_vcpkg_and_link_strict)
 
   # Snapshot directory-scope targets
   function(_triton_dir_targets OUT_BS OUT_IMP)
-get_directory_property(_bs BUILDSYSTEM_TARGETS)
+    get_directory_property(_bs BUILDSYSTEM_TARGETS)
     get_directory_property(_imp IMPORTED_TARGETS)
     if(NOT _bs)
       set(_bs "")
@@ -71,7 +87,7 @@ get_directory_property(_bs BUILDSYSTEM_TARGETS)
     endif()
   endfunction()
 
-  # One function to rule them all
+  # One function to rule them all (vcpkg)
   function(triton_find_vcpkg_and_link_strict tgt pkg)
     _triton_dir_targets(_before_bs _before_imp)
 
@@ -123,7 +139,25 @@ Please specify an explicit mapping in triton.json: { \"name\": \"${pkg}\", \"pac
       set_property(GLOBAL PROPERTY TRITON_ADDED_SUBDIRS "${_added};${_abs}|${_bin}")
     endif()
 
+    # What targets were created by the subdir?
     _triton_new_targets(_new _before_bs _before_imp)
+
+    # Normalize MSVC CRT and iterator level for newly-created targets (prevents /MTd and _ITERATOR_DEBUG_LEVEL=0)
+    if (MSVC)
+      foreach(_t IN LISTS _new)
+        if (TARGET ${_t})
+          get_target_property(_ty ${_t} TYPE)
+          if(_ty MATCHES "EXECUTABLE|STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY|OBJECT_LIBRARY")
+            # Force DLL runtime on those targets
+            set_property(TARGET ${_t} PROPERTY MSVC_RUNTIME_LIBRARY "${CMAKE_MSVC_RUNTIME_LIBRARY}")
+            # Make Debug builds compatible with vcpkg Debug libs
+            target_compile_definitions(${_t} PRIVATE $<$<CONFIG:Debug>:_ITERATOR_DEBUG_LEVEL=2>)
+          endif()
+        endif()
+      endforeach()
+    endif()
+
+    # If exactly one target showed up, link it
     list(LENGTH _new _cnt)
     if(_cnt EQUAL 1)
       list(GET _new 0 _t)
@@ -136,6 +170,7 @@ Please specify an explicit mapping in triton.json: { \"name\": \"${pkg}\", \"pac
 Please set the 'target' for git dep '${hint}' in triton.json.")
     endif()
 
+    # Otherwise, try to find all targets whose SOURCE_DIR == that subdir
     get_property(_all GLOBAL PROPERTY TARGETS)
     set(_cand "")
     foreach(t IN LISTS _all)

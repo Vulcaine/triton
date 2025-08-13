@@ -41,7 +41,7 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
                 if let Some(br) = &branch { run("git", &["checkout", br], &third)?; }
             }
             if !root.deps.iter().any(|d| matches!(d, RootDep::Git(g) if g.name == name || g.repo == repo)) {
-                root.deps.push(RootDep::Git(GitDep { repo, name: name.clone(), branch, target: None, cmake: vec![] }));
+                root.deps.push(RootDep::Git(GitDep { repo, name: name.clone(), branch, cmake: vec![] }));
             }
 
             if let Some(dest) = link_to_opt {
@@ -54,7 +54,7 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
                     write_text_if_changed(&cm, &crate::templates::component_cmakelists())?;
                 }
                 let entry = root.components.entry(dest.to_string())
-                    .or_insert(TritonComponent { kind: "lib".into(), link: vec![], defines: vec![] });
+                    .or_insert(TritonComponent { kind: "lib".into(), link: vec![], defines: vec![],  exports: vec![] });
                 if !entry.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == &name)) {
                     entry.link.push(LinkEntry::Name(name));
                 }
@@ -88,7 +88,7 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
                     write_text_if_changed(&cm, &crate::templates::component_cmakelists())?;
                 }
                 let entry = root.components.entry(dest.to_string())
-                    .or_insert(TritonComponent { kind: "lib".into(), link: vec![], defines: vec![]  });
+                    .or_insert(TritonComponent { kind: "lib".into(), link: vec![], defines: vec![],  exports: vec![]  });
                 if !entry.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == pkg)) {
                     entry.link.push(LinkEntry::Name(pkg.to_string()));
                 }

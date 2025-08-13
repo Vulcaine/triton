@@ -18,37 +18,44 @@ pub enum RootDep {
     Git(GitDep),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitDep {
     pub repo: String,
     pub name: String,
     #[serde(default)]
     pub branch: Option<String>,
-
-    /// Accept both old structured entries and new "VAR=VALUE" strings.
+    /// CMake cache overrides before add_subdirectory.
+    /// You can use either a structured entry or a raw `VAR=VAL` string.
     #[serde(default)]
     pub cmake: Vec<CMakeOverride>,
-
-    /// Back-compat (unused by new flow)
-    #[serde(default)]
-    pub target: Option<String>,
 }
 
+impl Default for GitDep {
+    fn default() -> Self {
+        Self {
+            repo: String::new(),
+            name: String::new(),
+            branch: None,
+            cmake: vec![],
+        }
+    }
+}
+
+/// Support either a structured cache entry or a raw `VAR=VAL`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CMakeOverride {
-    /// Simple "VAR=VALUE" form (preferred).
-    KV(String),
-    /// Backward-compatible structured form.
     Entry(CMakeCacheEntry),
+    KV(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CMakeCacheEntry {
     pub var: String,
     pub val: String,
+    /// Optional CMake cache type; default "STRING".
     #[serde(default = "default_cache_type")]
-    pub typ: String, // Usually "BOOL" or "STRING"
+    pub typ: String,
 }
 fn default_cache_type() -> String { "STRING".into() }
 
@@ -57,18 +64,19 @@ pub struct TritonComponent {
     pub kind: String, // "exe" | "lib"
     #[serde(default)]
     pub link: Vec<LinkEntry>,
-    /// Preprocessor defines to apply to this component (consumer).
-    /// Aliases let users write "define" or "definitions" too.
-    #[serde(default, alias = "define", alias = "definitions")]
+    /// Preprocessor defs applied to this component (e.g. "GLM_ENABLE_EXPERIMENTAL").
+    #[serde(default)]
     pub defines: Vec<String>,
+    /// Names of deps (as they appear in this component's `link`) to **re-export** PUBLICly.
+    /// Any component that depends on this one will inherit these usage requirements.
+    #[serde(default)]
+    pub exports: Vec<String>,
 }
 
-/// Allow forms inside `components.<name>.link`:
+/// Allow three forms inside `components.<name>.link`:
 /// 1) "sdl2"
 /// 2) { "name": "rmlui", "package": "RmlUi", "target": "RmlUi::RmlUi" }
-/// 3) { "rmlui": { "package": "RmlUi", "target": "RmlUi::RmlUi" } }
-/// 4) { "name": "filament", "targets": ["filament","utils","math"] }
-/// 5) { "filament": { "targets": ["filament","utils","math"] } }
+/// 3) { "name": "filament", "targets": ["filament","utils","math"] }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LinkEntry {
@@ -78,11 +86,9 @@ pub enum LinkEntry {
         #[serde(default)]
         package: Option<String>,
         #[serde(default)]
-        target: Option<String>,
-        /// Accept "targets" and common typo "tragets"
-        #[serde(default, alias = "tragets")]
         targets: Option<Vec<String>>,
     },
+    // Kept for backwards compatibility if you ever used a map form earlier
     Map(BTreeMap<String, LinkHint>),
 }
 
@@ -91,60 +97,45 @@ pub struct LinkHint {
     #[serde(default)]
     pub package: Option<String>,
     #[serde(default)]
-    pub target: Option<String>,
-    /// Accept "targets" and common typo "tragets"
-    #[serde(default, alias = "tragets")]
     pub targets: Option<Vec<String>>,
 }
 
 impl LinkEntry {
-    /// Canonicalize any variant into (name, package_hint, target_hint)
-    pub fn normalize(&self) -> (String, Option<String>, Option<String>) {
+    /// Canonicalize into (name, package_hint, first_target_hint)
+    pub fn normalize(&self) -> (String, Option<String>) {
         match self {
-            LinkEntry::Name(n) => (n.clone(), None, None),
-            LinkEntry::Named { name, package, target, targets } => {
-                let first = target.clone().or_else(|| targets.as_ref().and_then(|v| v.get(0).cloned()));
-                (name.clone(), package.clone(), first)
-            }
+            LinkEntry::Name(n) => (n.clone(), None),
+            LinkEntry::Named { name, package, .. } =>
+                (name.clone(), package.clone()),
             LinkEntry::Map(map) => {
                 if let Some((k, v)) = map.iter().next() {
-                    let first = v.target.clone().or_else(|| v.targets.as_ref().and_then(|vv| vv.get(0).cloned()));
-                    (k.clone(), v.package.clone(), first)
+                    (k.clone(), v.package.clone())
                 } else {
-                    ("".into(), None, None)
+                    ("".into(), None)
                 }
             }
         }
     }
 
-    /// Return all explicit targets requested (single or multiple).
+    /// Return all explicit targets if provided (for multi-target git/vcpkg entries).
     pub fn all_targets(&self) -> Vec<String> {
         match self {
-            LinkEntry::Name(_) => Vec::new(),
-            LinkEntry::Named { target, targets, .. } => {
-                let mut out = Vec::new();
-                if let Some(t) = target { out.push(t.clone()); }
+            LinkEntry::Named { targets, .. } => {
                 if let Some(ts) = targets {
-                    for t in ts {
-                        if !out.iter().any(|x| x == t) { out.push(t.clone()); }
-                    }
+                    ts.clone()
+                } else {
+                    vec![]
                 }
-                out
             }
             LinkEntry::Map(map) => {
                 if let Some((_k, v)) = map.iter().next() {
-                    let mut out = Vec::new();
-                    if let Some(t) = &v.target { out.push(t.clone()); }
                     if let Some(ts) = &v.targets {
-                        for t in ts {
-                            if !out.iter().any(|x| x == t) { out.push(t.clone()); }
-                        }
+                        return ts.clone();
                     }
-                    out
-                } else {
-                    Vec::new()
                 }
+                vec![]
             }
+            LinkEntry::Name(_) => vec![],
         }
     }
 }

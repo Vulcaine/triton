@@ -86,7 +86,7 @@ pub fn is_dep(root: &TritonRoot, name: &str) -> bool {
 
 pub fn has_link_to_name(comp: &TritonComponent, want: &str) -> bool {
     comp.link.iter().any(|e| {
-        let (n, _pkg, _tgt) = e.normalize();
+        let (n, _pkg) = e.normalize();
         n == want
     })
 }

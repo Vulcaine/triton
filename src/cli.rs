@@ -68,11 +68,20 @@ pub enum Commands {
     /// Re-generate managed CMake blocks
     Generate,
 
-    /// Build
+     /// Build
     Build {
+        /// Project root path (defaults to current dir)
+        #[arg(default_value = ".")]
         path: String,
+        /// Configuration preset (debug|release)
         #[arg(long, default_value = "debug")]
         config: String,
+        /// Interactively confirm cleaning build/<config> before building
+        #[arg(long, conflicts_with = "cleanf")]
+        clean: bool,
+        /// Force clean build/<config> without prompting
+        #[arg(long)]
+        cleanf: bool,
     },
 
     /// Run

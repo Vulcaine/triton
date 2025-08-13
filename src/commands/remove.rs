@@ -17,7 +17,7 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&
                 .ok_or_else(|| anyhow::anyhow!("No such component '{}'", comp_name))?;
 
             comp.link.retain(|e| {
-                let (name, _, _) = e.normalize();
+                let (name, _) = e.normalize();
                 name != pkg
             });
         }
@@ -46,7 +46,7 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&
     // Unlink from all components
     for c in root.components.values_mut() {
         c.link.retain(|e| {
-            let (name, _, _) = e.normalize();
+            let (name, _) = e.normalize();
             name != pkg && Some(name.as_str()) != removed_git_name.as_deref()
         });
     }
@@ -70,7 +70,7 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&
     if let Some(n) = removed_git_name {
         let still_used = root.components.values().any(|c| {
             c.link.iter().any(|e| {
-                let (name, _, _) = e.normalize();
+                let (name, _) = e.normalize();
                 name == n
             })
         });

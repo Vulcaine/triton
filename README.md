@@ -1,6 +1,8 @@
 # 🔱 Triton
 
-Tiny, easy-to-use C++ project manager that wires up **CMake + vcpkg** while keeping a clean, modular layout.
+Sick of wrestling CMake, vcpkg, and tangled build files?
+
+Triton is a tiny, no-ceremony C++ project manager that snaps CMake + vcpkg together, auto-wires deps, and keeps your project modular, so you ship features, not fight your build.
 
 ## ✨ Highlights
 
@@ -38,12 +40,12 @@ $env:Path += ";$env:USERPROFILE\.cargo\bin"
 # Quick Start
 
 ```bash
-triton init demo
+triton init --name demo
 cd demo
 triton add sdl2 glm               # add deps (no linking)
-triton add sdl2:demo             # add+link to component 'demo'
-triton build . --config debug
-triton run . --component demo
+triton add sdl2:demo              # add+link to component 'demo'
+triton build . --config debug     # default is debug
+triton run .
 ```
 
 ## Initialize an existing repo
@@ -133,7 +135,7 @@ If you need multiple filament targets, use:
 
 | Command                    | Purpose                                           | Common Options / Notes                                                                                   |
 |---------------------------|---------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
-| `triton init <dir>`       | Create new project scaffold in `<dir>`            | `triton init .` creates minimal files in current folder                                                   |
+| `triton init --name <dir>`       | Create new project scaffold in `<dir>`            | `triton init .` creates minimal files in current folder                                                   |
 | `triton add ...`          | Add one or more deps; optionally link to a component | Supports `pkg`, `org/repo@branch`, `pkg->Comp`; transactional with vcpkg                                  |
 | `triton link A->B`        | Component-to-component linking (creates components if missing) | New components default to `kind: "lib"`                                                        |
 | `triton remove`           | Remove/unlink deps                                | `--component <name>` to only unlink from that component                                                   |

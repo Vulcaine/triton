@@ -1,13 +1,4 @@
 cmake_minimum_required(VERSION 3.25)
-project(triton_components LANGUAGES CXX)
-
-# Components are added below (managed by triton)
-# ## triton:components begin
-# ## triton:components end
-### END
-
-### TEMPLATE:component_cmakelists
-cmake_minimum_required(VERSION 3.25)
 
 # Detect target name from directory
 get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)

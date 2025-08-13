@@ -1,14 +1,12 @@
-// src/templates.rs
-
 // Embed resources at compile-time (independent of working dir).
-const CMAKE_COMPONENT_TEMPLATE: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/cmake_template.cmake"));
+const COMPONENT_CMAKE_TEMPLATE: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/component_cmake_template.cmake"));
 
 const CMAKE_ROOT_HELPERS_TEMPLATE: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/cmake_root_template.cmake"));
 
 const CMAKE_COMPONENTS_HEADER_TEMPLATE: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/cmake_components_header.cmake"));
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/components_dir_template.cmake"));
 
 const PRESETS_TEMPLATE_JSON: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/cmake_presets_template.json"));
@@ -20,7 +18,7 @@ pub fn components_dir_cmakelists() -> String {
 
 /// Per-component CMakeLists template.
 pub fn component_cmakelists() -> String {
-    CMAKE_COMPONENT_TEMPLATE.to_string()
+    COMPONENT_CMAKE_TEMPLATE.to_string()
 }
 
 /// Helper block injected into root components CMakeLists.
