@@ -16,6 +16,14 @@ pub fn component_cmakelists() -> String {
 # Detect target name from directory
 get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
 
+# If using vcpkg toolchain and manifest not specified, point one level up
+if(DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MATCHES "vcpkg[.]cmake$")
+  if(NOT DEFINED VCPKG_MANIFEST_DIR)
+    set(VCPKG_MANIFEST_DIR "${CMAKE_SOURCE_DIR}/.." CACHE PATH "vcpkg manifest dir")
+    message(STATUS "triton: VCPKG_MANIFEST_DIR not set; using ${VCPKG_MANIFEST_DIR}")
+  endif()
+endif()
+
 # Collect sources (any C/C++ in src)
 file(GLOB_RECURSE COMP_SOURCES CONFIGURE_DEPENDS
     "src/*.c" "src/*.cc" "src/*.cxx" "src/*.cpp" "src/*.ixx")
@@ -82,7 +90,8 @@ r#"{{
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_TOOLCHAIN_FILE": "${{sourceDir}}/../vcpkg/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "{}"
+        "VCPKG_TARGET_TRIPLET": "{}",
+        "VCPKG_MANIFEST_DIR": "${{sourceDir}}/.."
       }}
     }},
     {{
