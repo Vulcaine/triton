@@ -46,10 +46,12 @@ pub struct TritonComponent {
     pub link: Vec<LinkEntry>,
 }
 
-/// Allow three forms inside `components.<name>.link`:
+/// Allow forms inside `components.<name>.link`:
 /// 1) "sdl2"
 /// 2) { "name": "rmlui", "package": "RmlUi", "target": "RmlUi::RmlUi" }
 /// 3) { "rmlui": { "package": "RmlUi", "target": "RmlUi::RmlUi" } }  (shorthand)
+/// 4) { "name": "filament", "targets": ["filament","utils","math"] }  (multi-target)
+/// 5) { "filament": { "targets": ["filament","utils","math"] } }      (shorthand)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LinkEntry {
@@ -60,6 +62,9 @@ pub enum LinkEntry {
         package: Option<String>,
         #[serde(default)]
         target: Option<String>,
+        /// Accept "targets" and common typo "tragets"
+        #[serde(default, alias = "tragets")]
+        targets: Option<Vec<String>>,
     },
     Map(BTreeMap<String, LinkHint>),
 }
@@ -70,20 +75,65 @@ pub struct LinkHint {
     pub package: Option<String>,
     #[serde(default)]
     pub target: Option<String>,
+    /// Accept "targets" and common typo "tragets"
+    #[serde(default, alias = "tragets")]
+    pub targets: Option<Vec<String>>,
 }
 
 impl LinkEntry {
     /// Canonicalize any variant into (name, package_hint, target_hint)
+    /// If multiple targets are provided, this returns the first as `target_hint`.
     pub fn normalize(&self) -> (String, Option<String>, Option<String>) {
         match self {
             LinkEntry::Name(n) => (n.clone(), None, None),
-            LinkEntry::Named { name, package, target } =>
-                (name.clone(), package.clone(), target.clone()),
+            LinkEntry::Named { name, package, target, targets } => {
+                let first = target.clone().or_else(|| targets.as_ref().and_then(|v| v.get(0).cloned()));
+                (name.clone(), package.clone(), first)
+            }
             LinkEntry::Map(map) => {
                 if let Some((k, v)) = map.iter().next() {
-                    (k.clone(), v.package.clone(), v.target.clone())
+                    let first = v.target.clone().or_else(|| v.targets.as_ref().and_then(|vv| vv.get(0).cloned()));
+                    (k.clone(), v.package.clone(), first)
                 } else {
                     ("".into(), None, None)
+                }
+            }
+        }
+    }
+
+    /// Return all explicit targets requested (single or multiple).
+    /// Empty if none specified.
+    pub fn all_targets(&self) -> Vec<String> {
+        match self {
+            LinkEntry::Name(_) => Vec::new(),
+            LinkEntry::Named { target, targets, .. } => {
+                let mut out = Vec::new();
+                if let Some(t) = target {
+                    out.push(t.clone());
+                }
+                if let Some(ts) = targets {
+                    for t in ts {
+                        if !out.iter().any(|x| x == t) {
+                            out.push(t.clone());
+                        }
+                    }
+                }
+                out
+            }
+            LinkEntry::Map(map) => {
+                if let Some((_k, v)) = map.iter().next() {
+                    let mut out = Vec::new();
+                    if let Some(t) = &v.target { out.push(t.clone()); }
+                    if let Some(ts) = &v.targets {
+                        for t in ts {
+                            if !out.iter().any(|x| x == t) {
+                                out.push(t.clone());
+                            }
+                        }
+                    }
+                    out
+                } else {
+                    Vec::new()
                 }
             }
         }

@@ -6,13 +6,15 @@ use crate::util::{read_to_string_opt, write_text_if_changed};
 /// Write/refresh components/CMakeLists.txt with managed helpers + subdirs
 pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
     let path = "components/CMakeLists.txt";
+
     let mut body = String::new();
     body.push_str(&components_dir_cmakelists());
 
-    // ---- Triton helper block (strict, using directory properties) ----
+    // ---- Triton helper block (simple & strict; de-duplicates add_subdirectory) ----
     body.push_str(r#"
 # === Triton CMake helpers (simple & strict) ===
 # CMake >= 3.7: use DIRECTORY properties to diff targets introduced by find_package/add_subdirectory.
+# Also track a GLOBAL list (TRITON_ADDED_SUBDIRS) to avoid re-adding the same git subdir.
 if(NOT COMMAND triton_find_vcpkg_and_link_strict)
 
   # Snapshot directory-scope targets
@@ -126,22 +128,82 @@ Tips:
   * Or add an explicit mapping in triton.json.")
   endfunction()
 
-  # Git subdir helper (minimal): link the one new target created, otherwise ask for a mapping
+  # Git subdir helper (deduplicated): add once globally and link one new/unique target.
   function(triton_add_subdir_and_link_strict tgt path hint)
     get_filename_component(_abs "${path}" ABSOLUTE)
+    get_filename_component(_dir "${_abs}" NAME)
+    set(_bin "${CMAKE_BINARY_DIR}/third_party/${_dir}")
+
+    # Check global added list
+    get_property(_added GLOBAL PROPERTY TRITON_ADDED_SUBDIRS)
+    if(NOT _added)
+      set(_added "")
+    endif()
+    list(FIND _added "${_abs}|${_bin}" _ix)
+
     _triton_dir_targets(_before_bs _before_imp)
-    add_subdirectory("${_abs}" "${CMAKE_CURRENT_BINARY_DIR}/third_party" EXCLUDE_FROM_ALL)
+    if(_ix EQUAL -1)
+      add_subdirectory("${_abs}" "${_bin}" EXCLUDE_FROM_ALL)
+      # Track globally to avoid re-adding from other components
+      set_property(GLOBAL PROPERTY TRITON_ADDED_SUBDIRS "${_added};${_abs}|${_bin}")
+    endif()
+
+    # Prefer "new targets" detection (if we just added it here)
     _triton_new_targets(_new _before_bs _before_imp)
-    list(LENGTH _new _n)
-    if(_n EQUAL 1)
+    list(LENGTH _new _cnt)
+    if(_cnt EQUAL 1)
       list(GET _new 0 _t)
       target_link_libraries(${tgt} PRIVATE ${_t})
       return()
-    elseif(_n EQUAL 0)
-      message(FATAL_ERROR "triton: no library targets were created by '${_abs}'. Please set 'target' for git dep '${hint}' in triton.json.")
+    elseif(_cnt GREATER 1)
+      message(FATAL_ERROR
+"triton: multiple library targets were created by '${_abs}':
+  ${_new}
+Please set the 'target' for git dep '${hint}' in triton.json.")
+    endif()
+
+    # Fallback: scan libraries under that source tree
+    get_property(_all GLOBAL PROPERTY TARGETS)
+    set(_cand "")
+    foreach(t IN LISTS _all)
+      if(TARGET ${t})
+        get_target_property(_src ${t} SOURCE_DIR)
+        if(_src AND _src STREQUAL _abs)
+          list(APPEND _cand "${t}")
+        endif()
+      endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _cand)
+    list(LENGTH _cand _c)
+    if(_c EQUAL 0)
+      message(FATAL_ERROR
+"triton: no library targets were created by '${_abs}'.
+Please specify which to link via 'target' in triton.json for git dep '${hint}'.")
+    elseif(_c EQUAL 1)
+      list(GET _cand 0 _t)
+      target_link_libraries(${tgt} PRIVATE ${_t})
+      return()
     else()
-      message(FATAL_ERROR "triton: multiple targets from '${_abs}': ${_new}
-Please set 'target' for git dep '${hint}' in triton.json.")
+      # Try to narrow using the hint
+      string(TOLOWER "${hint}" _h)
+      set(_both "")
+      foreach(t IN LISTS _cand)
+        string(TOLOWER "${t}" _tl)
+        if(_tl MATCHES "::${_h}($|::)" OR _tl MATCHES "(^|[^A-Za-z0-9])${_h}($|[^A-Za-z0-9])")
+          list(APPEND _both "${t}")
+        endif()
+      endforeach()
+      list(REMOVE_DUPLICATES _both)
+      list(LENGTH _both _bh)
+      if(_bh EQUAL 1)
+        list(GET _both 0 _t)
+        target_link_libraries(${tgt} PRIVATE ${_t})
+        return()
+      endif()
+      message(FATAL_ERROR
+"triton: multiple library targets live under '${_abs}':
+  ${_cand}
+Please set the 'target' for git dep '${hint}' in triton.json.")
     endif()
   endfunction()
 
@@ -176,20 +238,53 @@ fn emit_git_dep(lines: &mut Vec<String>, g: &GitDep) {
 fn gen_git_dep_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
     let mut out = vec![];
     for ent in &comp.link {
-        let (name, _pkg, maybe_tgt) = ent.normalize();
+        // We need both the name and potentially multiple explicit targets
+        let (name, _pkg, maybe_first) = ent.normalize();
+        let all_targets = ent.all_targets();
+        if name.is_empty() { continue; }
+
         if let Some(RootDep::Git(g)) = root.deps.iter().find(|d| matches!(d, RootDep::Git(x) if x.name == name)) {
-            if let Some(t) = maybe_tgt.as_ref() {
-                // Explicit override: add subdir and link the exact target
+            if !all_targets.is_empty() || maybe_first.is_some() {
+                // Explicit mapping: possibly multiple targets
+                let mut req: Vec<String> = if !all_targets.is_empty() {
+                    all_targets.clone()
+                } else {
+                    vec![maybe_first.unwrap()]
+                };
+
+                // Dedup while preserving order
+                req.dedup();
+
+                // Guarded, deduped add_subdirectory (GLOBAL)
                 out.push(format!(
-                    "add_subdirectory(\"${{CMAKE_SOURCE_DIR}}/../third_party/{n}\" \"${{CMAKE_BINARY_DIR}}/third_party/{n}\" EXCLUDE_FROM_ALL)",
+                    "set(_triton_src \"${{CMAKE_SOURCE_DIR}}/../third_party/{n}\")",
                     n = g.name
                 ));
                 out.push(format!(
-                    "if(TARGET {t})\n  target_link_libraries(${{_comp_name}} PRIVATE {t})\nelse()\n  message(FATAL_ERROR \"git dep '{n}' present but target '{t}' not found\")\nendif()",
-                    n = g.name, t = t
+                    "set(_triton_bin \"${{CMAKE_BINARY_DIR}}/third_party/{n}\")",
+                    n = g.name
                 ));
+                out.push("get_property(_triton_added GLOBAL PROPERTY TRITON_ADDED_SUBDIRS)".into());
+                out.push("if(NOT _triton_added)".into());
+                out.push("  set(_triton_added \"\")".into());
+                out.push("endif()".into());
+                out.push("list(FIND _triton_added \"${_triton_src}|${_triton_bin}\" _ix)".into());
+                out.push("if(_ix EQUAL -1)".into());
+                out.push("  add_subdirectory(\"${_triton_src}\" \"${_triton_bin}\" EXCLUDE_FROM_ALL)".into());
+                out.push("  set_property(GLOBAL PROPERTY TRITON_ADDED_SUBDIRS \"${_triton_added};${_triton_src}|${_triton_bin}\")".into());
+                out.push("endif()".into());
+
+                // For each requested target: create a unique alias and link it
+                for t in req {
+                    // Alias: triton::<dep>::<t>
+                    out.push(format!(
+                        "if(TARGET {t})\n  if(NOT TARGET triton::{dep}::{t})\n    add_library(triton::{dep}::{t} ALIAS {t})\n  endif()\n  target_link_libraries(${{_comp_name}} PRIVATE triton::{dep}::{t})\nelse()\n  message(FATAL_ERROR \"git dep '{dep}' present but target '{t}' not found\")\nendif()",
+                        dep = name, t = t
+                    ));
+                }
                 out.push(String::new());
             } else {
+                // No explicit targets -> use strict auto-detection (single target)
                 emit_git_dep(&mut out, g);
             }
         }
@@ -207,14 +302,34 @@ fn gen_vcpkg_dep_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String>
         let (name, pkg_hint, tgt_hint) = ent.normalize();
         if !vcpkg_names.iter().any(|n| *n == name) { continue; }
 
-        if let (Some(pkg), Some(tgt)) = (pkg_hint.clone(), tgt_hint.clone()) {
-            // Explicit mapping: REQUIRED + exact target name
+        let explicit_targets = ent.all_targets();
+
+        if let Some(pkg) = pkg_hint.clone() {
+            // Explicit mapping: REQUIRED + one or many imported targets
             lines.push(format!("find_package({} CONFIG REQUIRED)", pkg));
-            lines.push(format!(
-                "if(TARGET {t})\n  target_link_libraries(${{_comp_name}} PRIVATE {t})\nelse()\n  message(FATAL_ERROR \"Package '{p}' found but target '{t}' not defined.\")\nendif()",
-                p=pkg, t=tgt
-            ));
-            lines.push(String::new());
+
+            let req: Vec<String> = if !explicit_targets.is_empty() {
+                explicit_targets
+            } else if let Some(t) = tgt_hint.clone() {
+                vec![t]
+            } else {
+                vec![]
+            };
+
+            if req.is_empty() {
+                // No explicit targets given -> fall back to strict auto discover
+                lines.push(format!("# vcpkg: {}", name));
+                lines.push(format!("triton_find_vcpkg_and_link_strict(${{_comp_name}} \"{}\")", name));
+                lines.push(String::new());
+            } else {
+                for t in req {
+                    lines.push(format!(
+                        "if(TARGET {t})\n  target_link_libraries(${{_comp_name}} PRIVATE {t})\nelse()\n  message(FATAL_ERROR \"Package '{p}' found but target '{t}' not defined.\")\nendif()",
+                        p=pkg, t=t
+                    ));
+                }
+                lines.push(String::new());
+            }
         } else {
             // Strict discovery with helpful failure
             lines.push(format!("# vcpkg: {}", name));
