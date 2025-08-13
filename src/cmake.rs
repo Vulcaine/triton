@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use crate::models::{CMakeOverride, GitDep, RootDep, TritonComponent, TritonRoot};
+use std::collections::{HashSet, VecDeque};
+
+use crate::models::{GitDep, RootDep, TritonComponent, TritonRoot};
 use crate::templates::{cmake_root_helpers, components_dir_cmakelists};
 use crate::util::{
     cmake_quote, infer_cmake_type, read_to_string_opt, split_kv, write_text_if_changed,
@@ -19,7 +21,7 @@ pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
     body.push_str(cmake_root_helpers());
     body.push('\n');
 
-    // 3) managed subdirectories only (simple alphabetical; could be topo-sorted if needed)
+    // 3) managed subdirectories only (simple alphabetical; upgrade to topo if you want)
     body.push_str("\n# Subdirectories (managed)\n# ## triton:components begin\n");
     let mut names: Vec<_> = root.components.keys().cloned().collect();
     names.sort();
@@ -32,36 +34,85 @@ pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
     Ok(())
 }
 
-/// Emit cache overrides like `set(VAR "VAL" CACHE TYPE "" FORCE)`
-fn emit_cache_overrides(lines: &mut Vec<String>, ov: &CMakeOverride) {
-    match ov {
-        CMakeOverride::Entry(e) => {
-            let ty = if e.typ.is_empty() { "STRING" } else { e.typ.as_str() };
-            let val_q = cmake_quote(&e.val);
-            lines.push(format!("set({} {} CACHE {} \"\" FORCE)", e.var, val_q, ty));
-        }
-        CMakeOverride::KV(raw) => {
-            if raw.trim().is_empty() { return; }
-            let (var, val) = split_kv(raw); // <-- this now strips a leading "-D"
-            if var.is_empty() { return; }
-            let ty = infer_cmake_type(&val);
-            let val_q = cmake_quote(&val);
-            lines.push(format!("set({} {} CACHE {} \"\" FORCE)", var, val_q, ty));
-        }
-    }
+/* ------------------------- export propagation helpers ------------------------- */
+
+/// Information we need to link a vcpkg dep.
+#[derive(Clone)]
+struct VcpkgSpec {
+    name: String,
+    pkg_hint: Option<String>,
+    targets: Vec<String>, // empty => no explicit targets (can't PUBLIC-link using strict helper)
+    public: bool,
 }
 
-fn emit_git_dep(lines: &mut Vec<String>, g: &GitDep, want_public: bool) {
-    // Forward any cache overrides first
-    for ov in &g.cmake {
-        emit_cache_overrides(lines, ov);
-    }
+/// Information we need to link a git dep.
+#[derive(Clone)]
+struct GitSpec {
+    name: String,
+    targets: Vec<String>, // empty => fallback helper, which is PRIVATE only
+    public: bool,
+}
 
-    // If no explicit target mapping and we don't know which target to re-export,
-    // fall back to the strict helper (PRIVATE inside the helper). For true PUBLIC
-    // re-export of git deps, prefer specifying "targets" for the dep in triton.json.
+/// BFS over upstream components (those this component depends on) to find a dep spec.
+fn find_upstream_dep_spec(
+    root: &TritonRoot,
+    start_comp: &str,
+    dep_name: &str,
+) -> Option<(Option<String>, Vec<String>)> {
+    let mut q = VecDeque::new();
+    let mut seen = HashSet::new();
+    q.push_back(start_comp.to_string());
+    seen.insert(start_comp.to_string());
+
+    while let Some(curr) = q.pop_front() {
+        let c = root.components.get(&curr)?;
+        // Does this component link the dep directly? If so, extract details.
+        for ent in &c.link {
+            let (n, pkg_hint) = ent.normalize();
+            if n == dep_name {
+                let targets = ent.all_targets();
+                return Some((pkg_hint, targets));
+            }
+        }
+        // Otherwise enqueue upstream components
+        for ent in &c.link {
+            let (n, _) = ent.normalize();
+            if root.components.contains_key(&n) && !seen.contains(&n) {
+                seen.insert(n.clone());
+                q.push_back(n);
+            }
+        }
+    }
+    None
+}
+
+/* ----------------------------- cmake cache overrides ----------------------------- */
+
+fn push_git_cache_overrides(lines: &mut Vec<String>, g: &GitDep) {
+    use crate::models::CMakeOverride;
+
+    for ov in &g.cmake {
+        match ov {
+            CMakeOverride::Entry(e) => {
+                let ty = if e.typ.is_empty() { "STRING" } else { e.typ.as_str() };
+                let val_q = cmake_quote(&e.val);
+                lines.push(format!("set({} {} CACHE {} \"\" FORCE)", e.var, val_q, ty));
+            }
+            CMakeOverride::KV(raw) => {
+                if raw.trim().is_empty() { continue; }
+                let (var, val) = split_kv(raw);
+                if var.is_empty() { continue; }
+                let ty = infer_cmake_type(&val);
+                let val_q = cmake_quote(&val);
+                lines.push(format!("set({} {} CACHE {} \"\" FORCE)", var, val_q, ty));
+            }
+        }
+    }
+    lines.push(String::new());
+}
+
+fn emit_git_dep(lines: &mut Vec<String>, g: &GitDep) {
     let prefer = g.name.as_str();
-    let _vis = if want_public { "PUBLIC" } else { "PRIVATE" };
     lines.push(format!(
         "triton_add_subdir_and_link_strict(${{_comp_name}} \"${{CMAKE_SOURCE_DIR}}/../third_party/{name}\" \"{hint}\")",
         name = g.name, hint = prefer
@@ -69,97 +120,169 @@ fn emit_git_dep(lines: &mut Vec<String>, g: &GitDep, want_public: bool) {
     lines.push(String::new());
 }
 
-fn gen_git_dep_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
-    let mut out = vec![];
+/* ------------------------------ effective dep sets ------------------------------ */
+
+/// Build the set of GIT deps the component must link, including propagated
+/// exports (PUBLIC) that come from upstream components.
+fn build_effective_git_specs(root: &TritonRoot, comp_name: &str, comp: &TritonComponent) -> Vec<GitSpec> {
+    let mut out: Vec<GitSpec> = Vec::new();
+    let mut seen = HashSet::<String>::new();
+
+    // 1) Direct git deps
     for ent in &comp.link {
         let (name, _pkg) = ent.normalize();
-        let all_targets = ent.all_targets();
         if name.is_empty() { continue; }
+        if !root.deps.iter().any(|d| matches!(d, RootDep::Git(g) if g.name == name)) {
+            continue;
+        }
+        let public = comp.exports.iter().any(|e| e == &name);
+        let spec = GitSpec { name: name.clone(), targets: ent.all_targets(), public };
+        if seen.insert(name) { out.push(spec); }
+    }
 
-        let want_public = comp.exports.iter().any(|e| e == &name);
-
-        if let Some(RootDep::Git(g)) = root.deps.iter().find(|d| matches!(d, RootDep::Git(x) if x.name == name)) {
-            if !all_targets.is_empty() {
-                // --- EXPLICIT TARGETS PATH ---
-                // 1) Apply overrides BEFORE add_subdirectory so Filament (or others) pick them up
-                for ov in &g.cmake {
-                    emit_cache_overrides(&mut out, ov);
-                }
-
-                // 2) Deduped add_subdirectory of the git repo
-                out.push(format!("set(_triton_src \"${{CMAKE_SOURCE_DIR}}/../third_party/{n}\")", n = g.name));
-                out.push(format!("set(_triton_bin \"${{CMAKE_BINARY_DIR}}/third_party/{n}\")", n = g.name));
-                out.push("get_property(_triton_added GLOBAL PROPERTY TRITON_ADDED_SUBDIRS)".into());
-                out.push("if(NOT _triton_added)".into());
-                out.push("  set(_triton_added \"\")".into());
-                out.push("endif()".into());
-                out.push("list(FIND _triton_added \"${_triton_src}|${_triton_bin}\" _ix)".into());
-                out.push("if(_ix EQUAL -1)".into());
-                out.push("  add_subdirectory(\"${_triton_src}\" \"${_triton_bin}\" EXCLUDE_FROM_ALL)".into());
-                out.push("  set_property(GLOBAL PROPERTY TRITON_ADDED_SUBDIRS \"${_triton_added};${_triton_src}|${_triton_bin}\")".into());
-                out.push("endif()".into());
-
-                // 3) Link requested targets with desired visibility
-                let vis = if want_public { "PUBLIC" } else { "PRIVATE" };
-                let mut req = all_targets.clone();
-                req.dedup();
-                for t in req {
-                    out.push(format!(
-                        "if(TARGET {t})\n  if(NOT TARGET triton::{dep}::{t})\n    add_library(triton::{dep}::{t} ALIAS {t})\n  endif()\n  target_link_libraries(${{_comp_name}} {vis} triton::{dep}::{t})\nelse()\n  message(FATAL_ERROR \"git dep '{dep}' present but target '{t}' not found\")\nendif()",
-                        dep = name, t = t, vis = vis
-                    ));
-                }
-                out.push(String::new());
-            } else {
-                // No explicit target mapping → use helper that auto-picks a target
-                emit_git_dep(&mut out, g, want_public);
+    // 2) Propagated exports: for each exported name that is a git dep, if not directly linked,
+    //    try to locate upstream component that links it (and copy its targets).
+    for exp_name in &comp.exports {
+        if seen.contains(exp_name) { continue; }
+        if !root.deps.iter().any(|d| matches!(d, RootDep::Git(g) if g.name == *exp_name)) {
+            continue;
+        }
+        if let Some((_, targets)) = find_upstream_dep_spec(root, comp_name, exp_name) {
+            // Only propagate if targets are known; otherwise we'd fall back to the strict helper
+            // which links PRIVATE. If you need PUBLIC here, declare explicit targets upstream.
+            if !targets.is_empty() && seen.insert(exp_name.clone()) {
+                out.push(GitSpec { name: exp_name.clone(), targets, public: true });
             }
         }
     }
+
     out
 }
 
-fn gen_vcpkg_dep_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
-    let vcpkg_names: Vec<&str> = root.deps.iter().filter_map(|d| {
-        if let RootDep::Name(n) = d { Some(n.as_str()) } else { None }
-    }).collect();
+/// Build the set of VCPKG deps the component must link, including propagated PUBLIC exports.
+fn build_effective_vcpkg_specs(root: &TritonRoot, comp_name: &str, comp: &TritonComponent) -> Vec<VcpkgSpec> {
+    let mut out: Vec<VcpkgSpec> = Vec::new();
+    let mut seen = HashSet::<String>::new();
 
-    let mut lines: Vec<String> = vec![];
+    // 1) Direct vcpkg deps
     for ent in &comp.link {
         let (name, pkg_hint) = ent.normalize();
-        if !vcpkg_names.iter().any(|n| *n == name) { continue; }
+        if name.is_empty() { continue; }
+        if !root.deps.iter().any(|d| matches!(d, RootDep::Name(n) if n == &name)) {
+            continue;
+        }
+        let public = comp.exports.iter().any(|e| e == &name);
+        let spec = VcpkgSpec { name: name.clone(), pkg_hint, targets: ent.all_targets(), public };
+        if seen.insert(name) { out.push(spec); }
+    }
 
-        let explicit_targets = ent.all_targets();
-        let want_public = comp.exports.iter().any(|e| e == &name);
-        let vis = if want_public { "PUBLIC" } else { "PRIVATE" };
+    // 2) Propagated exports
+    for exp_name in &comp.exports {
+        if seen.contains(exp_name) { continue; }
+        if !root.deps.iter().any(|d| matches!(d, RootDep::Name(n) if n == exp_name)) {
+            continue;
+        }
+        if let Some((pkg_hint, targets)) = find_upstream_dep_spec(root, comp_name, exp_name) {
+            if !targets.is_empty() && seen.insert(exp_name.clone()) {
+                out.push(VcpkgSpec { name: exp_name.clone(), pkg_hint, targets, public: true });
+            }
+        }
+    }
 
-        if let Some(pkg) = pkg_hint.clone() {
+    out
+}
+
+/* ------------------------- code generators (link blocks) ------------------------ */
+
+fn gen_git_dep_lines(root: &TritonRoot, comp_name: &str, comp: &TritonComponent) -> Vec<String> {
+    let mut out = vec![];
+    let specs = build_effective_git_specs(root, comp_name, comp);
+
+    for spec in specs {
+        // Find matching git root dep (to push cache overrides & source dir)
+        let g = match root.deps.iter().find_map(|d| {
+            if let RootDep::Git(gg) = d { (gg.name == spec.name).then_some(gg) } else { None }
+        }) {
+            Some(x) => x,
+            None => continue,
+        };
+
+        // Always forward cache overrides before add_subdirectory
+        push_git_cache_overrides(&mut out, g);
+
+        if !spec.targets.is_empty() {
+            // Deduped add_subdirectory for this repo
+            out.push(format!("set(_triton_src \"${{CMAKE_SOURCE_DIR}}/../third_party/{n}\")", n = g.name));
+            out.push(format!("set(_triton_bin \"${{CMAKE_BINARY_DIR}}/third_party/{n}\")", n = g.name));
+            out.push("get_property(_triton_added GLOBAL PROPERTY TRITON_ADDED_SUBDIRS)".into());
+            out.push("if(NOT _triton_added)".into());
+            out.push("  set(_triton_added \"\")".into());
+            out.push("endif()".into());
+            out.push("list(FIND _triton_added \"${_triton_src}|${_triton_bin}\" _ix)".into());
+            out.push("if(_ix EQUAL -1)".into());
+            out.push("  add_subdirectory(\"${_triton_src}\" \"${_triton_bin}\" EXCLUDE_FROM_ALL)".into());
+            out.push("  set_property(GLOBAL PROPERTY TRITON_ADDED_SUBDIRS \"${_triton_added};${_triton_src}|${_triton_bin}\")".into());
+            out.push("endif()".into());
+
+            let vis = if spec.public { "PUBLIC" } else { "PRIVATE" };
+            for t in spec.targets {
+                out.push(format!(
+"if(TARGET {t})
+  if(NOT TARGET triton::{dep}::{t})
+    add_library(triton::{dep}::{t} ALIAS {t})
+  endif()
+  target_link_libraries(${{_comp_name}} {vis} triton::{dep}::{t})
+else()
+  message(FATAL_ERROR \"git dep '{dep}' present but target '{t}' not found\")
+endif()",
+                    dep = g.name, t = t, vis = vis
+                ));
+            }
+            out.push(String::new());
+        } else {
+            // No explicit targets known -> fallback helper (PRIVATE). We don't force PUBLIC here.
+            emit_git_dep(&mut out, g);
+        }
+    }
+
+    out
+}
+
+fn gen_vcpkg_dep_lines(root: &TritonRoot, comp: &TritonComponent, comp_name: &str) -> Vec<String> {
+    let mut lines: Vec<String> = vec![];
+    let specs = build_effective_vcpkg_specs(root, comp_name, comp);
+
+    for spec in specs {
+        // We need a package hint to call find_package with CONFIG REQUIRED
+        if let Some(pkg) = spec.pkg_hint.clone() {
             lines.push(format!("find_package({} CONFIG REQUIRED)", pkg));
-            let req: Vec<String> = if !explicit_targets.is_empty() {
-                explicit_targets
-            } else {
-                vec![]
-            };
-
-            if req.is_empty() {
-                lines.push(format!("# vcpkg: {}", name));
-                lines.push(format!("triton_find_vcpkg_and_link_strict(${{_comp_name}} \"{}\")", name));
+            if spec.targets.is_empty() {
+                // Without explicit targets, our strict helper links PRIVATE; keep behavior consistent.
+                lines.push(format!("# vcpkg: {} (no explicit targets; using strict finder)", spec.name));
+                lines.push(format!("triton_find_vcpkg_and_link_strict(${{_comp_name}} \"{}\")", spec.name));
                 lines.push(String::new());
             } else {
-                for t in req {
+                let vis = if spec.public { "PUBLIC" } else { "PRIVATE" };
+                for t in spec.targets {
                     lines.push(format!(
-                        "if(TARGET {t})\n  target_link_libraries(${{_comp_name}} {vis} {t})\nelse()\n  message(FATAL_ERROR \"Package '{p}' found but target '{t}' not defined.\")\nendif()",
-                        p=pkg, t=t, vis=vis
+"if(TARGET {t})
+  target_link_libraries(${{_comp_name}} {vis} {t})
+else()
+  message(FATAL_ERROR \"Package '{p}' found but target '{t}' not defined.\")
+endif()",
+                        p = pkg, t = t, vis = vis
                     ));
                 }
                 lines.push(String::new());
             }
         } else {
-            lines.push(format!("# vcpkg: {}", name));
-            lines.push(format!("triton_find_vcpkg_and_link_strict(${{_comp_name}} \"{}\")", name));
+            // No pkg hint -> strict helper; will be PRIVATE. To re-export PUBLIC, add explicit targets upstream.
+            lines.push(format!("# vcpkg: {} (no package hint; using strict finder)", spec.name));
+            lines.push(format!("triton_find_vcpkg_and_link_strict(${{_comp_name}} \"{}\")", spec.name));
             lines.push(String::new());
         }
     }
+
     lines
 }
 
@@ -168,9 +291,13 @@ fn gen_component_link_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<St
     for ent in &comp.link {
         let (name, _pkg) = ent.normalize();
         if root.components.contains_key(&name) {
+            // Always PRIVATE for component->component; exports propagate via explicit PUBLIC links to deps (above).
             lines.push(format!("target_link_libraries(${{_comp_name}} PRIVATE {name})"));
+            // Make consumer see provider's headers
             lines.push(format!(
-                "if(EXISTS \"${{CMAKE_SOURCE_DIR}}/{n}/include\")\n  target_include_directories(${{_comp_name}} PRIVATE \"${{CMAKE_SOURCE_DIR}}/{n}/include\")\nendif()",
+                "if(EXISTS \"${{CMAKE_SOURCE_DIR}}/{n}/include\")
+  target_include_directories(${{_comp_name}} PRIVATE \"${{CMAKE_SOURCE_DIR}}/{n}/include\")
+endif()",
                 n = name
             ));
         }
@@ -241,21 +368,21 @@ endif()"#;
         "".into(),
     ];
 
-    // Per-component compile definitions
+    // Per-component compile definitions (GLM_ENABLE_EXPERIMENTAL, etc.)
     dep_lines.extend(gen_component_defines_lines(comp));
     if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() { dep_lines.push("".into()); }
 
-    // External deps (git + vcpkg) — PUBLIC if in comp.exports, else PRIVATE
-    dep_lines.extend(gen_git_dep_lines(root, comp));
+    // External deps (git + vcpkg), including propagated PUBLIC exports
+    dep_lines.extend(gen_git_dep_lines(root, name, comp));
     if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() { dep_lines.push("".into()); }
 
-    let vcpkg_lines = gen_vcpkg_dep_lines(root, comp);
+    let vcpkg_lines = gen_vcpkg_dep_lines(root, comp, name);
     if !vcpkg_lines.is_empty() {
         dep_lines.extend(vcpkg_lines);
         if !dep_lines.last().unwrap().is_empty() { dep_lines.push("".into()); }
     }
 
-    // Internal component links
+    // Internal component links (PRIVATE + add include dir)
     dep_lines.extend(gen_component_link_lines(root, comp));
 
     let mut new_body = String::new();

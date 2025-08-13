@@ -15,8 +15,8 @@ use crate::util::read_json;
 
 pub fn normalize_config(cfg: &str) -> &'static str {
     match cfg.trim().to_ascii_lowercase().as_str() {
-        "release" | "rel" | "r"   => "release",
-        "debug"   | "dbg" | "d"   => "debug",
+        "release" | "rel" | "r" => "release",
+        "debug" | "dbg" | "d" => "debug",
         _ => "debug",
     }
 }
@@ -28,7 +28,9 @@ pub fn preset_for(cfg: &str) -> &'static str {
     }
 }
 
-pub fn build_dir_for(project: &Path, cfg: &str) -> PathBuf { project.join(format!("build/{}", cfg)) }
+pub fn build_dir_for(project: &Path, cfg: &str) -> PathBuf {
+    project.join(format!("build/{}", cfg))
+}
 
 pub fn is_configured_for_generator(build_dir: &Path, generator: &str) -> bool {
     let cache = build_dir.join("CMakeCache.txt");
@@ -64,7 +66,9 @@ pub fn resolve_generator_for_preset(
     start: &str,
     guard: &mut Vec<String>,
 ) -> Option<String> {
-    if guard.len() > 32 { return None; }
+    if guard.len() > 32 {
+        return None;
+    }
     guard.push(start.to_string());
     let p = m.get(start)?;
     if let Some(gen) = p.get("generator").and_then(|g| g.as_str()) {
@@ -73,13 +77,17 @@ pub fn resolve_generator_for_preset(
     if let Some(inh) = p.get("inherits") {
         if let Some(s) = inh.as_str() {
             if !guard.contains(&s.to_string()) {
-                if let Some(g) = resolve_generator_for_preset(m, s, guard) { return Some(g); }
+                if let Some(g) = resolve_generator_for_preset(m, s, guard) {
+                    return Some(g);
+                }
             }
         } else if let Some(arr) = inh.as_array() {
             for item in arr {
                 if let Some(s) = item.as_str() {
                     if !guard.contains(&s.to_string()) {
-                        if let Some(g) = resolve_generator_for_preset(m, s, guard) { return Some(g); }
+                        if let Some(g) = resolve_generator_for_preset(m, s, guard) {
+                            return Some(g);
+                        }
                     }
                 }
             }
@@ -90,29 +98,45 @@ pub fn resolve_generator_for_preset(
 
 #[cfg(windows)]
 fn vsdevcmd_path() -> Option<PathBuf> {
-    let vswhere = PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
-    if !vswhere.exists() { return None; }
+    let vswhere =
+        PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
+    if !vswhere.exists() {
+        return None;
+    }
     let out = Command::new(&vswhere)
         .args([
             "-latest",
-            "-products", "*",
-            "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-            "-property", "installationPath",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
         ])
         .output()
         .ok()?;
-    if !out.status.success() { return None; }
+    if !out.status.success() {
+        return None;
+    }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut p = PathBuf::from(s);
     p.push(r"Common7\Tools\VsDevCmd.bat");
-    if p.exists() { Some(p) } else { None }
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 #[cfg(windows)]
 fn win_norm(p: &Path) -> String {
     let mut s = p.to_string_lossy().to_string();
-    if let Some(rest) = s.strip_prefix(r"\\?\") { s = rest.to_string(); }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        s = rest.to_string();
+    }
     s.replace('/', r"\")
 }
 
@@ -162,42 +186,47 @@ fn write_batch_and_run(
 
 pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Result<()> {
     // Repo root
-    let project = PathBuf::from(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+    let project = PathBuf::from(path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(path));
     let components_dir = project.join("components");
 
     let cfg = normalize_config(config);
     let preset = preset_for(cfg);
     let build_dir = build_dir_for(&project, cfg);
+    let build_root = project.join("build"); // <-- clean the whole build/ tree
 
-    // --clean / --cleanf
-    if (clean || cleanf) && build_dir.exists() {
-        if cleanf {
-            eprintln!("Force cleaning: {}", build_dir.display());
-            fs::remove_dir_all(&build_dir)
-                .with_context(|| format!("removing {}", build_dir.display()))?;
-        } else if clean {
-            eprintln!("About to remove the build directory:");
-            eprintln!("  {}", build_dir.display());
-            eprintln!("Proceed? [y/N]  (Ctrl+C to abort)");
-            eprint!("> ");
-            io::stdout().flush().ok();
-
-            let mut line = String::new();
-            if io::stdin().read_line(&mut line).is_ok() {
-                let ans = line.trim().to_ascii_lowercase();
-                if ans == "y" || ans == "yes" {
-                    fs::remove_dir_all(&build_dir)
-                        .with_context(|| format!("removing {}", build_dir.display()))?;
-                    eprintln!("Removed {}", build_dir.display());
-                } else {
-                    eprintln!("Clean aborted; continuing without deleting.");
-                }
+    // --clean / --cleanf (operate on the entire build/ directory)
+    if clean || cleanf {
+        if build_root.exists() {
+            if cleanf {
+                eprintln!("Force cleaning: {}", build_root.display());
+                fs::remove_dir_all(&build_root)
+                    .with_context(|| format!("removing {}", build_root.display()))?;
             } else {
-                eprintln!("(no input) Clean aborted; continuing without deleting.");
+                eprintln!("About to remove the build directory (ALL CONFIGS):");
+                eprintln!("  {}", build_root.display());
+                eprintln!("Proceed? [y/N]  (Ctrl+C to abort)");
+                eprint!("> ");
+                io::stdout().flush().ok();
+
+                let mut line = String::new();
+                if io::stdin().read_line(&mut line).is_ok() {
+                    let ans = line.trim().to_ascii_lowercase();
+                    if ans == "y" || ans == "yes" {
+                        fs::remove_dir_all(&build_root)
+                            .with_context(|| format!("removing {}", build_root.display()))?;
+                        eprintln!("Removed {}", build_root.display());
+                    } else {
+                        eprintln!("Clean aborted; continuing without deleting.");
+                    }
+                } else {
+                    eprintln!("(no input) Clean aborted; continuing without deleting.");
+                }
             }
+        } else {
+            eprintln!("Nothing to clean ({} does not exist).", build_root.display());
         }
-    } else if (clean || cleanf) && !build_dir.exists() {
-        eprintln!("Nothing to clean ({} does not exist).", build_dir.display());
     }
 
     // (Re)generate CMake files from triton.json every build
@@ -234,7 +263,11 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
         fs::create_dir_all(&build_dir)?;
         let mut configure_line = format!("cmake --preset {}", preset);
         if let Some(dir) = &ninja_abs_dir {
-            let ninja_bin = if cfg!(windows) { dir.join("ninja.exe") } else { dir.join("ninja") };
+            let ninja_bin = if cfg!(windows) {
+                dir.join("ninja.exe")
+            } else {
+                dir.join("ninja")
+            };
             configure_line.push_str(&format!(" -DCMAKE_MAKE_PROGRAM=\"{}\"", ninja_bin.display()));
         }
 
@@ -265,7 +298,11 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
                 let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
                 parts.insert(0, dir.clone());
                 cmd.env("PATH", env::join_paths(parts).expect("join PATH"));
-                let ninja_bin = if cfg!(windows) { dir.join("ninja.exe") } else { dir.join("ninja") };
+                let ninja_bin = if cfg!(windows) {
+                    dir.join("ninja.exe")
+                } else {
+                    dir.join("ninja")
+                };
                 cmd.arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja_bin.display()));
             }
             // avoid leaking CC/CXX from environment
@@ -295,7 +332,9 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
         )?
     } else {
         let mut b = Command::new("cmake");
-        b.arg("--build").arg(format!("--preset={}", preset)).current_dir(&components_dir);
+        b.arg("--build")
+            .arg(format!("--preset={}", preset))
+            .current_dir(&components_dir);
         if let Some(dir) = &ninja_abs_dir {
             let existing = env::var_os("PATH").unwrap_or_default();
             let mut parts = env::split_paths(&existing).collect::<Vec<_>>();

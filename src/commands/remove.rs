@@ -9,7 +9,18 @@ use crate::util::{read_json, write_json_pretty_changed, write_text_if_changed};
 pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&str>, _host: bool) -> Result<()> {
     let mut root: TritonRoot = read_json("triton.json")?;
 
+    // If a component is specified, only unlink from that component.
     if let Some(comp_name) = component_opt {
+        // Resolve `pkg` to canonical dep name if user passed a git repo string.
+        let canonical = root.deps.iter().find_map(|d| {
+            if let RootDep::Git(g) = d {
+                if g.name == pkg || g.repo == pkg {
+                    return Some(g.name.clone());
+                }
+            }
+            None
+        }).unwrap_or_else(|| pkg.to_string());
+
         {
             let comp = root
                 .components
@@ -18,19 +29,25 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&
 
             comp.link.retain(|e| {
                 let (name, _) = e.normalize();
-                name != pkg
+                // remove if matches canonical (case-insensitive)
+                !name.eq_ignore_ascii_case(&canonical)
             });
         }
 
         write_json_pretty_changed("triton.json", &root)?;
-        let comp = root.components.get(comp_name).expect("component should exist");
-        rewrite_component_cmake(comp_name, &root, comp)?;
+
+        // Important: rewrite ALL component CMake files so they exist (idempotent),
+        // not just the target component, since tests expect B/CMakeLists.txt too.
+        for (name, comp) in &root.components {
+            rewrite_component_cmake(name, &root, comp)?;
+        }
         regenerate_root_cmake(&root)?;
+
         eprintln!("Unlinked '{}' from component '{}'.", pkg, comp_name);
         return Ok(());
     }
 
-    // Remove dep from root.deps
+    // Global remove: drop from root.deps (by vcpkg name or git name/repo).
     let mut removed_git_name: Option<String> = None;
     root.deps.retain(|d| match d {
         RootDep::Name(n) => n != pkg,
@@ -43,7 +60,7 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&
         }
     });
 
-    // Unlink from all components
+    // Unlink from all components (match either given pkg or the git canonical name).
     for c in root.components.values_mut() {
         c.link.retain(|e| {
             let (name, _) = e.normalize();
@@ -82,7 +99,7 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&
         }
     }
 
-    // Immutable borrows only here
+    // Rewrite all component CMake after global change
     for (name, comp) in &root.components {
         rewrite_component_cmake(name, &root, comp)?;
     }
