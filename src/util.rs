@@ -4,6 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::models::{RootDep, TritonComponent, TritonRoot};
+use crate::templates::component_cmakelists;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Change {
     Created,
@@ -61,4 +64,35 @@ pub fn run(cmd: &str, args: &[&str], cwd: &str) -> Result<()> {
         return Err(anyhow!("command failed: {} {:?}", cmd, args));
     }
     Ok(())
+}
+
+/* ------------------------- new shared helpers ------------------------- */
+
+/// Ensure a component's folder layout exists and create `CMakeLists.txt` if missing.
+pub fn ensure_component_scaffold(name: &str) -> Result<()> {
+    let base = format!("components/{name}");
+    fs::create_dir_all(format!("{base}/src"))?;
+    fs::create_dir_all(format!("{base}/include"))?;
+    let cm = format!("{base}/CMakeLists.txt");
+    if !Path::new(&cm).exists() {
+        write_text_if_changed(&cm, &component_cmakelists())
+            .with_context(|| format!("writing {}", cm))?;
+    }
+    Ok(())
+}
+
+/// Return true if `name` is one of the project deps (vcpkg or git).
+pub fn is_dep(root: &TritonRoot, name: &str) -> bool {
+    root.deps.iter().any(|d| match d {
+        RootDep::Name(n) => n == name,
+        RootDep::Git(g) => g.name == name,
+    })
+}
+
+/// Returns true if component's link list already contains an entry that normalizes to `want_name`.
+pub fn has_link_to_name(comp: &TritonComponent, want_name: &str) -> bool {
+    comp.link.iter().any(|e| {
+        let (n, _pkg, _tgt) = e.normalize();
+        n == want_name
+    })
 }

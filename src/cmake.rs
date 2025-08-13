@@ -6,7 +6,6 @@ use crate::util::{read_to_string_opt, write_text_if_changed};
 /// Write/refresh components/CMakeLists.txt with managed helpers + subdirs
 pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
     let path = "components/CMakeLists.txt";
-
     let mut body = String::new();
     body.push_str(&components_dir_cmakelists());
 
