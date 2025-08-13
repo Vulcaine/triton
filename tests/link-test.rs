@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path};
 use tempfile::tempdir;
+use serial_test::serial;
 
 use triton::handle_link;
 use triton::models::{RootDep, TritonComponent, TritonRoot};
@@ -81,6 +82,7 @@ fn read_to_string(p: impl AsRef<Path>) -> String {
 }
 
 #[test]
+#[serial]
 fn link_dep_into_component_adds_dep_and_generates_cmake() {
     let td = tempdir().unwrap();
     let root = td.path();
@@ -109,6 +111,7 @@ fn link_dep_into_component_adds_dep_and_generates_cmake() {
 }
 
 #[test]
+#[serial]
 fn link_component_to_component_is_rhs_directional() {
     let td = tempdir().unwrap();
     let root = td.path();
@@ -158,6 +161,7 @@ fn link_component_to_component_is_rhs_directional() {
 }
 
 #[test]
+#[serial]
 fn rhs_cannot_be_a_dep() {
     let td = tempdir().unwrap();
     let root = td.path();
@@ -173,6 +177,7 @@ fn rhs_cannot_be_a_dep() {
 }
 
 #[test]
+#[serial]
 fn linking_is_idempotent() {
     let td = tempdir().unwrap();
     let root = td.path();

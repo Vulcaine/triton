@@ -7,6 +7,7 @@ pub mod tools;
 pub mod commands {
     pub mod link;
     pub mod build;
+    pub mod init;
 }
 
 pub use crate::commands::link::handle_link;
