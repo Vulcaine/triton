@@ -28,6 +28,10 @@ Sick of wrestling CMake, vcpkg, and tangled build files?
 
 ## 🚀 Install
 
+[🪟 Download Triton (Windows)](https://github.com/Vulcaine/triton/releases/latest/download/triton.exe)
+
+**OR**
+
 With Rust installed:
 
 ```bash
