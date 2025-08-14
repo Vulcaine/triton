@@ -1,0 +1,115 @@
+stages:
+  - test
+  - release
+
+workflow:
+  rules:
+    # Pipelines on MRs and on branch pushes
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+variables:
+  CARGO_TERM_COLOR: always
+  PACKAGE_NAME: "triton"                     # your crate/bin name
+  WINDOWS_TARGET: "x86_64-pc-windows-gnu"    # cross-compile to Windows GNU
+  EXE_NAME: "triton.exe"                     # output file name
+
+cache:
+  key: "cargo-cache"
+  paths:
+    - target/
+    - .cargo/registry/
+    - .cargo/git/
+
+# --- Tests -------------------------------------------------------------
+
+test:
+  stage: test
+  image: rust:1
+  script:
+    - rustup --version
+    - cargo --version
+    - cargo test --locked --all-targets
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+# --- Release button (manual) ------------------------------------------
+
+# 1) Build a Windows .exe (cross-compiled) and keep as artifact.
+build_release_win_exe:
+  stage: release
+  image: rust:1
+  needs: ["test"]                 # only after tests passed
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual               # this is your "Release" button
+      allow_failure: false
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends mingw-w64 ca-certificates
+    - rustup target add "$WINDOWS_TARGET"
+  script:
+    - cargo test --locked --all-targets
+    - cargo build --release --locked --target "$WINDOWS_TARGET"
+    - mkdir -p dist
+    - |
+      # copy the produced exe to a predictable path
+      cp "target/$WINDOWS_TARGET/release/${PACKAGE_NAME}.exe" "dist/${EXE_NAME}" \
+      || cp target/$WINDOWS_TARGET/release/*.exe "dist/${EXE_NAME}"
+  artifacts:
+    name: "${CI_PROJECT_NAME}-win64-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/${EXE_NAME}
+    expire_in: 2 weeks
+
+# 2) Publish: upload binary to Generic Packages (versioned + 'latest') and create a Release.
+publish_release:
+  stage: release
+  image: alpine:3.19
+  needs:
+    - job: build_release_win_exe
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_success
+  before_script:
+    - apk add --no-cache curl jq git
+  script:
+    # Extract version from Cargo.toml
+    - VERSION=$(awk -F\" '/^version *=/ {print $2; exit}' Cargo.toml)
+    - TAG="v${VERSION}"
+    # Make tag unique if it already exists -> append UTC timestamp YYYYMMDDHHMM
+    - git fetch --tags
+    - if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then TS=$(date -u +%Y%m%d%H%M); TAG="${TAG}-${TS}"; fi
+    - echo "Using tag: ${TAG}"
+
+    # Upload to GitLab Generic Packages (versioned)
+    - |
+      PKG_URL_VERSION="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${TAG}/${EXE_NAME}"
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file dist/${EXE_NAME} "${PKG_URL_VERSION}"
+
+    # Also upload a 'latest' copy so README can point to a stable URL
+    - |
+      PKG_URL_LATEST="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/latest/${EXE_NAME}"
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file dist/${EXE_NAME} "${PKG_URL_LATEST}"
+
+    - echo "Versioned download: ${PKG_URL_VERSION}"
+    - echo "Latest download:    ${PKG_URL_LATEST}"
+
+    # Create the GitLab Release via API (requires $GITLAB_TOKEN with 'api' scope)
+    - |
+      RELEASE_PAYLOAD=$(jq -n \
+        --arg name "Triton ${TAG}" \
+        --arg tag_name "${TAG}" \
+        --arg ref "${CI_COMMIT_SHA}" \
+        --arg desc "Automated release for ${TAG}" \
+        --arg asset_name "${EXE_NAME}" \
+        --arg asset_url "${PKG_URL_VERSION}" \
+        '{name:$name, tag_name:$tag_name, ref:$ref, description:$desc,
+          assets:{links:[{name:$asset_name, url:$asset_url}]}}')
+
+      curl --fail --request POST \
+        --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+        --header "Content-Type: application/json" \
+        --data "${RELEASE_PAYLOAD}" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"

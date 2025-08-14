@@ -1,8 +1,11 @@
 # 🔱 Triton
 
+> **Status:** _alpha_ • **OS:** Windows **(tested)** · Linux/macOS **(experimental)**, PRs welcome
+
 Sick of wrestling CMake, vcpkg, and tangled build files?
 
-Triton is a tiny, no-ceremony C++ project manager that snaps CMake + vcpkg together, auto-wires deps, and keeps your project modular, so you ship features, not fight your build.
+**Triton** is a tiny, no-ceremony C++ project manager that snaps CMake + vcpkg together, auto-wires deps, and keeps your project modular—so you ship features, not fight your build.
+
 
 ## ✨ Highlights
 
@@ -12,6 +15,16 @@ Triton is a tiny, no-ceremony C++ project manager that snaps CMake + vcpkg toget
 - 📦 vcpkg runs in **manifest mode**
 - 🌱 Git deps vendored into `third_party/<name>` via `add_subdirectory(...)`
 - 🪟 Windows + Ninja: uses `VsDevCmd.bat` to prime the MSVC environment
+
+## ⚙️ Requirements
+
+- **Windows 10/11** (tested). Linux & macOS are experimental.
+- **Rust** (stable)
+- **CMake** (≥ 3.25 recommended)
+- **Ninja** (recommended) or MSBuild
+- **Git**
+- **vcpkg** (manifest mode; Triton manages `vcpkg.json`)
+- **Visual Studio 2022 Build Tools** (cl.exe, link.exe) on Windows
 
 ## 🚀 Install
 
