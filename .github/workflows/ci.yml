@@ -3,16 +3,16 @@ name: CI
 on:
   pull_request:
     branches: [ main ]
-    types: [ opened, synchronize, reopened, ready_for_review ]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   test:
     runs-on: windows-latest
-    permissions:
-      contents: read
     concurrency:
-      # one in-flight run per PR; new commits cancel the previous run
-      group: pr-${{ github.event.pull_request.number }}
+      group: ci-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
