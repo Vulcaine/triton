@@ -67,6 +67,10 @@ triton run .
 
 ## Initialize an existing repo
 
+If you want to use triton in an existing project, that requires a bit of work.
+Triton enforces a project architecture as a convention, so you must move everything under `components`.
+Your earlier CMakeLists.txt will no longer be needed, triton will automatically generate them.
+
 ```bash
 cd existing-repo
 triton init .                     # minimal: writes triton.json and components/CMakeLists.txt
@@ -218,6 +222,33 @@ triton run . --component demo --config debug -- --arg1 --arg2
 # ## triton:deps end
 ```
 Anything outside that block is yours and will not be touched.
+
+### Scripts
+
+Define custom commands in `triton.json`:
+
+```json
+"scripts": {
+  "dev": "triton build . --config debug && triton run . --component Game --config debug",
+  "fmt": "clang-format -i components/**/src/**/*.{h,hpp,c,cpp}"
+}
+```
+
+**Run With**
+
+```bash
+### Scripts
+
+Define custom commands in `triton.json`:
+
+```json
+"scripts": {
+  "dev": "triton build . --config debug && triton run .",
+  "fmt": "clang-format -i components/**/src/**/*.{h,hpp,c,cpp}"
+}
+```
+
+Script names cannot shadow built-ins (`build`, `run`, `add`, …); Triton will error if they do.
 
 
 # Notes

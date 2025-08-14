@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path};
 use tempfile::tempdir;
@@ -71,6 +72,7 @@ fn init_project(tmp: &Path, deps: &[RootDep]) {
         generator: "Ninja".into(),
         cxx_std: "20".into(),
         deps: deps.to_vec(),
+        scripts: HashMap::default(),
         components: Default::default(),
     };
     write_json_pretty_changed(tmp.join("triton.json"), &root).unwrap();

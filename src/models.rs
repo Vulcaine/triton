@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TritonRoot {
@@ -9,6 +9,8 @@ pub struct TritonRoot {
     pub cxx_std: String,
     pub deps: Vec<RootDep>,
     pub components: BTreeMap<String, TritonComponent>,
+    #[serde(default)]
+    pub scripts: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

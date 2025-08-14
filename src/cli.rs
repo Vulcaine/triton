@@ -94,4 +94,8 @@ pub enum Commands {
         #[arg(last = true)]
         args: Vec<String>,
     },
+
+    /// Any unknown subcommand is treated as a script name + args.
+    #[command(external_subcommand)]
+    Script(Vec<String>),
 }

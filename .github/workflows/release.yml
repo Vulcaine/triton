@@ -4,7 +4,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write  # needed to create releases
+  contents: write
 
 jobs:
   build-windows:

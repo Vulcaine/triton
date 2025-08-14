@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 // tests/remove-test.rs
 use std::fs;
 use std::path::Path;
@@ -48,6 +49,7 @@ fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
         cxx_std: "20".into(),
         deps: vec![RootDep::Name("glm".into()), RootDep::Name("sdl2".into())],
         components: Default::default(),
+        scripts: HashMap::default(),
     };
     meta.components.insert(
         "A".into(),
@@ -55,7 +57,7 @@ fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
             kind: "lib".into(),
             link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())],
             defines: vec![],
-            exports: vec![],
+            exports: vec![]
         },
     );
     meta.components.insert(
@@ -64,7 +66,7 @@ fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
             kind: "lib".into(),
             link: vec![LinkEntry::Name("glm".into())],
             defines: vec![],
-            exports: vec![],
+            exports: vec![]
         },
     );
 
@@ -117,6 +119,7 @@ fn remove_vcpkg_dep_globally_updates_manifest_and_unlinks_everywhere() {
         cxx_std: "20".into(),
         deps: vec![RootDep::Name("glm".into()), RootDep::Name("sdl2".into())],
         components: Default::default(),
+        scripts: HashMap::default(),
     };
     meta.components.insert(
         "Core".into(),
@@ -193,6 +196,7 @@ fn remove_git_dep_globally_unlinks_everywhere_and_prunes_third_party_if_unused()
         cxx_std: "20".into(),
         deps: vec![git, RootDep::Name("sdl2".into())],
         components: Default::default(),
+        scripts: HashMap::default(),
     };
     meta.components.insert(
         "Engine".into(),
@@ -256,6 +260,7 @@ fn remove_from_missing_component_returns_error() {
         cxx_std: "20".into(),
         deps: vec![RootDep::Name("glm".into())],
         components: Default::default(),
+        scripts: HashMap::default(),
     };
     seed_project(root, &meta);
 
