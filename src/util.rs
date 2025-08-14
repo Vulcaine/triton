@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::{env, path::{Path, PathBuf}};
 use std::process::Command;
 
 use crate::models::{RootDep, TritonComponent, TritonRoot};
@@ -14,10 +14,40 @@ pub enum Change {
     Unchanged,
 }
 
-pub fn vcpkg_exe_path() -> String {
-    let mut p = PathBuf::from("vcpkg");
-    p.push(if cfg!(windows) { "vcpkg.exe" } else { "vcpkg" });
-    p.to_string_lossy().to_string()
+fn which_in_path(candidates: &[&str]) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    for dir in env::split_paths(&path) {
+        for name in candidates {
+            let p = dir.join(name);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Locate vcpkg:
+/// 1) TRITON_VCPKG_EXE
+/// 2) VCPKG_EXE
+/// 3) PATH (vcpkg.exe / vcpkg.bat / vcpkg.cmd on Windows, vcpkg on *nix)
+pub fn vcpkg_exe_path() -> Result<PathBuf> {
+    if let Some(p) = env::var_os("TRITON_VCPKG_EXE").filter(|v| !v.is_empty()) {
+        let pb = PathBuf::from(p);
+        if pb.is_file() { return Ok(pb); }
+    }
+    if let Some(p) = env::var_os("VCPKG_EXE").filter(|v| !v.is_empty()) {
+        let pb = PathBuf::from(p);
+        if pb.is_file() { return Ok(pb); }
+    }
+    if cfg!(windows) {
+        if let Some(p) = which_in_path(&["vcpkg.exe", "vcpkg.bat", "vcpkg.cmd"]) {
+            return Ok(p);
+        }
+    } else if let Some(p) = which_in_path(&["vcpkg"]) {
+        return Ok(p);
+    }
+    Err(anyhow!("Could not find vcpkg in TRITON_VCPKG_EXE / VCPKG_EXE / PATH"))
 }
 
 pub fn read_to_string_opt<P: AsRef<Path>>(p: P) -> Option<String> {
@@ -51,14 +81,14 @@ pub fn read_json<P: AsRef<Path>, T: DeserializeOwned>(p: P) -> Result<T> {
     Ok(serde_json::from_str(&s)?)
 }
 
-pub fn run(cmd: &str, args: &[&str], cwd: &str) -> Result<()> {
-    let status = Command::new(cmd)
-        .args(args)
+pub fn run(exe: impl AsRef<Path>, args: &[&str], cwd: impl AsRef<Path>) -> Result<()> {
+    let status = Command::new(exe.as_ref())
         .current_dir(cwd)
+        .args(args)
         .status()
-        .with_context(|| format!("failed to spawn {cmd}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to spawn {}: {e}", exe.as_ref().display()))?;
     if !status.success() {
-        return Err(anyhow!("command failed: {} {:?}", cmd, args));
+        return Err(anyhow::anyhow!("command exited with {}", status));
     }
     Ok(())
 }

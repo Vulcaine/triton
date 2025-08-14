@@ -100,10 +100,9 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
 
     // vcpkg install after updating manifest
     if touched_vcpkg_manifest {
-        let vcpkg_bin = crate::util::vcpkg_exe_path();
+        let vcpkg_bin = crate::util::vcpkg_exe_path()?;
         eprintln!("Running vcpkg install (manifest mode)...");
-        // If this fails, revert manifest changes? We keep it simple: the error aborts `add`.
-        crate::util::run(&vcpkg_bin, &["install"], ".")?;
+        crate::util::run(vcpkg_bin.as_path(), &["install"], ".")?;
     }
 
     // Regenerate cmake
