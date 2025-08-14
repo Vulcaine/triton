@@ -1,6 +1,11 @@
 # 🔱 Triton
 
-Tiny, easy-to-use C++ project manager that wires up **CMake + vcpkg** while keeping a clean, modular layout.
+> **Status:** _alpha_ • **OS:** Windows **(tested)** · Linux/macOS **(experimental)**, PRs welcome
+
+Sick of wrestling CMake, vcpkg, and tangled build files?
+
+**Triton** is a tiny, no-ceremony C++ project manager that snaps CMake + vcpkg together, auto-wires deps, and keeps your project modular—so you ship features, not fight your build.
+
 
 ## ✨ Highlights
 
@@ -11,7 +16,21 @@ Tiny, easy-to-use C++ project manager that wires up **CMake + vcpkg** while keep
 - 🌱 Git deps vendored into `third_party/<name>` via `add_subdirectory(...)`
 - 🪟 Windows + Ninja: uses `VsDevCmd.bat` to prime the MSVC environment
 
+## ⚙️ Requirements
+
+- **Windows 10/11** (tested). Linux & macOS are experimental.
+- **Rust** (stable)
+- **CMake** (≥ 3.25 recommended)
+- **Ninja** (recommended) or MSBuild
+- **Git**
+- **vcpkg** (manifest mode; Triton manages `vcpkg.json`)
+- **Visual Studio 2022 Build Tools** (cl.exe, link.exe) on Windows
+
 ## 🚀 Install
+
+[🪟 Download Triton (Windows)](https://github.com/Vulcaine/triton/releases/latest/download/triton.exe)
+
+**OR**
 
 With Rust installed:
 
@@ -38,12 +57,12 @@ $env:Path += ";$env:USERPROFILE\.cargo\bin"
 # Quick Start
 
 ```bash
-triton init demo
+triton init --name demo
 cd demo
 triton add sdl2 glm               # add deps (no linking)
-triton add sdl2:demo             # add+link to component 'demo'
-triton build . --config debug
-triton run . --component demo
+triton add sdl2:demo              # add+link to component 'demo'
+triton build . --config debug     # default is debug
+triton run .
 ```
 
 ## Initialize an existing repo
@@ -67,12 +86,16 @@ triton generate                   # write/refresh managed CMake blocks
   "deps": [
     "sdl2",
     "glm",
-    { "repo": "google/filament", "name": "filament", "branch": null, "target": null, "cmake": [] }
+    { "repo": "google/filament", "name": "filament", "branch": null, "cmake": [] }
   ],
   "components": {
     "demo": {
       "kind": "exe",
-      "link": ["sdl2", "glm", "filament"]
+      "link": [
+        "sdl2",
+        "glm",
+        { "name": "filament", "targets": ["filament"] }
+      ]
     },
     "core": {
       "kind": "lib",
@@ -80,6 +103,11 @@ triton generate                   # write/refresh managed CMake blocks
     }
   }
 }
+```
+
+If you need multiple filament targets, use:
+```json
+{ "name": "filament", "targets": ["filament", "utils", "math"] }
 ```
 
 ### Top-level fields
@@ -100,10 +128,17 @@ triton generate                   # write/refresh managed CMake blocks
 |---------|----------|-----------------------|-------------------------------------------------------------------------|
 | `repo`  | ✓ (git)  | `"google/filament"`   | GitHub org/repo                                                         |
 | `name`  | ✓ (git)  | `"filament"`          | Local folder/dep name (used for linking & `third_party/<name>`)        |
-| `branch`| –        | `"v3.0.0"`            | Optional branch/tag                                                     |
-| `target`| –        | `"filament"`          | Optional CMake target to link explicitly                                |
+| `branch`| –        | `"v3.0.0"`            | Optional branch/tag                                                     |                             |
 | `cmake` | –        | `["-DFILAMENT=ON"]`   | Optional list of cache entries injected before `add_subdirectory`       |
 
+**`cmake` entry format (structured):**
+
+```json
+"cmake": [
+  "FILAMENT_SOME_OPTION=ON"
+  "CMAKE_POLICY_DEFAULT_CMP0091=NEW"
+]
+```
 
 ### components entries
 
@@ -117,7 +152,7 @@ triton generate                   # write/refresh managed CMake blocks
 
 | Command                    | Purpose                                           | Common Options / Notes                                                                                   |
 |---------------------------|---------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
-| `triton init <dir>`       | Create new project scaffold in `<dir>`            | `triton init .` creates minimal files in current folder                                                   |
+| `triton init --name <dir>`       | Create new project scaffold in `<dir>`            | `triton init .` creates minimal files in current folder                                                   |
 | `triton add ...`          | Add one or more deps; optionally link to a component | Supports `pkg`, `org/repo@branch`, `pkg->Comp`; transactional with vcpkg                                  |
 | `triton link A->B`        | Component-to-component linking (creates components if missing) | New components default to `kind: "lib"`                                                        |
 | `triton remove`           | Remove/unlink deps                                | `--component <name>` to only unlink from that component                                                   |

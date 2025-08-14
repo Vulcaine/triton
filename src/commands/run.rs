@@ -129,7 +129,7 @@ pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[Str
     };
 
     if need_build {
-        handle_build(&project.display().to_string(), cfg)?;
+        handle_build(&project.display().to_string(), cfg, false, false)?;
     }
 
     // Run (re-find exe in case we just built it)

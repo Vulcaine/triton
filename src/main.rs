@@ -35,11 +35,9 @@ fn main() -> Result<()> {
         Commands::Init { name, triplet, generator, cxx_std } =>
             handle_init(opt_str(&name), &triplet, &generator, &cxx_std),
 
-        // multiple items; no default component
         Commands::Add { items, features, host } =>
             handle_add(&items, opt_str(&features), host),
 
-        // Remove: optional component; do not default to "app"
         Commands::Remove { pkg, component, features, host } =>
             handle_remove(&pkg, opt_str(&component), opt_str(&features), host),
 
@@ -49,8 +47,8 @@ fn main() -> Result<()> {
             cmake::regenerate_root_cmake(&root)
         }
 
-        Commands::Build { path, config } =>
-            handle_build(&path, &config),
+        Commands::Build { path, config, clean, cleanf } =>
+            handle_build(&path, &config, clean, cleanf),
 
         Commands::Run { path, component, config, args } =>
             handle_run(&path, opt_str(&component), &config, &args),

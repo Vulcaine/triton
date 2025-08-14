@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write  # needed to create releases
+
+jobs:
+  build-windows:
+    name: Build (Windows exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --all-targets
+      - run: cargo build --release --locked
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/triton.exe dist/triton.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/triton.exe
+
+  release:
+    name: Create GitHub Release
+    needs: build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+          path: dist
+
+      - id: meta
+        name: Compute tag from Cargo.toml (with collision fallback)
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)
+          TAG="v${VERSION}"
+          git fetch --tags --quiet
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            TS=$(date -u +%Y%m%d%H%M)
+            TAG="${TAG}-${TS}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release & upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Triton ${{ steps.meta.outputs.tag }}
+          body: |
+            Automated release for ${{ steps.meta.outputs.tag }}.
+            - Windows: triton.exe
+          draft: false
+          prerelease: false
+          files: |
+            dist/triton.exe
