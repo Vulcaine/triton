@@ -1,4 +1,3 @@
-// src/commands/init.rs
 use anyhow::{Context, Result};
 use std::env;
 use std::fs;
@@ -10,7 +9,6 @@ use crate::tools::ensure_ninja_dir;
 use crate::util::{run, write_json_pretty_changed, write_text_if_changed, Change};
 
 pub fn handle_init(name_opt: Option<&str>, triplet: &str, generator: &str, cxx_std: &str) -> Result<()> {
-    // Determine project directory
     let cwd = env::current_dir().context("cannot get current directory")?;
     let (project_dir, minimal_mode) = match name_opt {
         // `triton init .` or just `triton init` => minimal init in current directory, no component scaffold

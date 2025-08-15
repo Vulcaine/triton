@@ -70,7 +70,6 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
     // Regenerate the root (helpers + topo-sorted subdirs)
     regenerate_root_cmake(&root)?;
 
-    // Message
     if from_is_dep {
         eprintln!("Linked component '{}' to depend on dep '{}'.", to, from);
     } else {

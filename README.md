@@ -2,10 +2,14 @@
 
 > **Status:** _alpha_ • **OS:** Windows **(tested)** · Linux/macOS **(experimental)**, PRs welcome
 
-Sick of wrestling CMake, vcpkg, and tangled build files?
+Tired of chanting mysterious CMake incantations, tiptoeing around vcpkg quirks, and untangling a plate of build-file spaghetti?
+**Triton** is a tiny, no-nonsense C++ project manager that snaps CMake and vcpkg together like LEGO®, auto-wires your dependencies, and keeps your codebase ship-shape.. so you can spend your energy shipping features instead of waging war on your build system.
 
-**Triton** is a tiny, no-ceremony C++ project manager that snaps CMake + vcpkg together, auto-wires deps, and keeps your project modular—so you ship features, not fight your build.
+> At least, that’s the dream **Triton** is trying to live up to. It’s still alpha — so it might occasionally trip over its own trident.
 
+If **Triton** itself feels tricky, hey — nothing’s stopping you from making your own wrapper around Triton… which would make it the fourth wrapper around C++ package managers. And who knows.. maybe someone will wrap your wrapper. Together we can summon Wrapzilla.
+
+**Or…** you can help Triton ascend and become the most powerful of them all. PRs, issues, and wild suggestions are always welcome aboard.
 
 ## ✨ Highlights
 
@@ -182,17 +186,17 @@ triton add org/repo@tag:Renderer
 # `remove ` examples
 
 ```bash
-triton remove <pkg>
-triton remove <pkg> --component <name> 
+triton remove <pkg> # removes the package entirely from the project
+triton remove <pkg> --component <name>  # removes the package linking from <name>
 ```
 
 # Build/Run
 
 ```bash
-triton build . --config debug
+triton build . --config debug # equivalent of triton build .
 triton build . --config release
 
-triton run . --component demo --config debug -- --arg1 --arg2
+triton run . -- --arg1 --arg2
 ```
 
 
@@ -229,7 +233,7 @@ Define custom commands in `triton.json`:
 
 ```json
 "scripts": {
-  "dev": "triton build . --config debug && triton run . --component Game --config debug",
+  "dev": "triton build . --config debug && triton run . --config debug",
   "fmt": "clang-format -i components/**/src/**/*.{h,hpp,c,cpp}"
 }
 ```
@@ -237,15 +241,8 @@ Define custom commands in `triton.json`:
 **Run With**
 
 ```bash
-### Scripts
-
-Define custom commands in `triton.json`:
-
-```json
-"scripts": {
-  "dev": "triton build . --config debug && triton run .",
-  "fmt": "clang-format -i components/**/src/**/*.{h,hpp,c,cpp}"
-}
+triton fmt
+triton dev
 ```
 
 Script names cannot shadow built-ins (`build`, `run`, `add`, …); Triton will error if they do.

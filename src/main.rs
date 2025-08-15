@@ -62,7 +62,6 @@ fn main() -> Result<()> {
             handle_link(&from, &to)
         }
 
-        // NEW: treat unknown subcommands as scripts
         Commands::Script(v) => handle_script(&v),
     }
 }

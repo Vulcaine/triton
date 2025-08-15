@@ -93,8 +93,6 @@ pub fn run(exe: impl AsRef<Path>, args: &[&str], cwd: impl AsRef<Path>) -> Resul
     Ok(())
 }
 
-/* ------------------------- shared helpers used by cmake.rs ------------------------- */
-
 pub fn ensure_component_scaffold(name: &str) -> Result<()> {
     let base = format!("components/{name}");
     fs::create_dir_all(format!("{base}/src"))?;

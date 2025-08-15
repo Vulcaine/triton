@@ -194,7 +194,7 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
     let cfg = normalize_config(config);
     let preset = preset_for(cfg);
     let build_dir = build_dir_for(&project, cfg);
-    let build_root = project.join("build"); // <-- clean the whole build/ tree
+    let build_root = project.join("build");
 
     // --clean / --cleanf (operate on the entire build/ directory)
     if clean || cleanf {
