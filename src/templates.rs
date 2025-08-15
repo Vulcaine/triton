@@ -2,6 +2,9 @@
 const COMPONENT_CMAKE_TEMPLATE: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/component_cmake_template.cmake"));
 
+const TEST_COMPONENT_CMAKE_TEMPLATE: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/cmake_test_template.cmake"));
+
 const CMAKE_ROOT_HELPERS_TEMPLATE: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/cmake_root_template.cmake"));
 
@@ -17,8 +20,13 @@ pub fn components_dir_cmakelists() -> String {
 }
 
 /// Per-component CMakeLists template.
-pub fn component_cmakelists() -> String {
-    COMPONENT_CMAKE_TEMPLATE.to_string()
+/// Pass `true` for the tests component to use the test-specific template.
+pub fn component_cmakelists(is_test: bool) -> String {
+    if is_test {
+        TEST_COMPONENT_CMAKE_TEMPLATE.to_string()
+    } else {
+        COMPONENT_CMAKE_TEMPLATE.to_string()
+    }
 }
 
 /// Helper block injected into root components CMakeLists.

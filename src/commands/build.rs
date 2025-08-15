@@ -229,11 +229,32 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
         }
     }
 
-    // (Re)generate CMake files from triton.json every build
+    // Load project model
     let root: TritonRoot = read_json(project.join("triton.json"))?;
-    regenerate_root_cmake(&root)?; // writes components/CMakeLists.txt
-    for (name, comp) in &root.components {
-        rewrite_component_cmake(name, &root, comp)?; // writes components/<name>/CMakeLists.txt
+
+    // === IMPORTANT: filter to only existing component directories ===
+    // This prevents build from implicitly scaffolding or referencing phantom components.
+    let existing: Vec<String> = root
+        .components
+        .keys()
+        .filter(|name| components_dir.join(*name).is_dir())
+        .cloned()
+        .collect();
+
+    // Create a filtered view of the root for codegen/regeneration
+    let mut root_filtered = root.clone();
+    root_filtered
+        .components
+        .retain(|name, _| existing.iter().any(|n| n == name));
+
+    // Regenerate root CMake (subdirs) using ONLY existing components
+    regenerate_root_cmake(&root_filtered)?; // writes components/CMakeLists.txt
+
+    // Only rewrite per-component CMake for components that actually exist
+    for name in existing {
+        if let Some(comp) = root.components.get(&name) {
+            rewrite_component_cmake(&name, &root, comp)?; // writes components/<name>/CMakeLists.txt
+        }
     }
 
     // Ensure components/CMakePresets.json exists (create if missing)

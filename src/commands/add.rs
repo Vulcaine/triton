@@ -51,7 +51,7 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
                 fs::create_dir_all(format!("{base}/include"))?;
                 let cm = format!("{base}/CMakeLists.txt");
                 if !Path::new(&cm).exists() {
-                    write_text_if_changed(&cm, &crate::templates::component_cmakelists())?;
+                    write_text_if_changed(&cm, &crate::templates::component_cmakelists(false))?;
                 }
                 let entry = root.components.entry(dest.to_string())
                     .or_insert(TritonComponent { kind: "lib".into(), link: vec![], defines: vec![],  exports: vec![] });
@@ -85,7 +85,7 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
                 fs::create_dir_all(format!("{base}/include"))?;
                 let cm = format!("{base}/CMakeLists.txt");
                 if !Path::new(&cm).exists() {
-                    write_text_if_changed(&cm, &crate::templates::component_cmakelists())?;
+                    write_text_if_changed(&cm, &crate::templates::component_cmakelists(false))?;
                 }
                 let entry = root.components.entry(dest.to_string())
                     .or_insert(TritonComponent { kind: "lib".into(), link: vec![], defines: vec![],  exports: vec![]  });

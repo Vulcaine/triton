@@ -97,11 +97,14 @@ pub fn ensure_component_scaffold(name: &str) -> Result<()> {
     let base = format!("components/{name}");
     fs::create_dir_all(format!("{base}/src"))?;
     fs::create_dir_all(format!("{base}/include"))?;
+
     let cm = format!("{base}/CMakeLists.txt");
     if !Path::new(&cm).exists() {
-        write_text_if_changed(&cm, &component_cmakelists())
+        let is_test = name.eq_ignore_ascii_case("tests");
+        write_text_if_changed(&cm, &component_cmakelists(is_test))
             .with_context(|| format!("writing {}", cm))?;
     }
+
     Ok(())
 }
 

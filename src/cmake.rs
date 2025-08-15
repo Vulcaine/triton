@@ -318,7 +318,9 @@ fn gen_component_defines_lines(comp: &TritonComponent) -> Vec<String> {
 
 pub fn rewrite_component_cmake(name: &str, root: &TritonRoot, comp: &TritonComponent) -> Result<()> {
     let path = format!("components/{name}/CMakeLists.txt");
-    let base_raw = read_to_string_opt(&path).unwrap_or_else(crate::templates::component_cmakelists);
+    let base_raw = read_to_string_opt(&path).unwrap_or_else(|| {
+        crate::templates::component_cmakelists(name.eq_ignore_ascii_case("tests"))
+    });
 
     // Idempotent include visibility migration
     let canonical = r#"if(_is_exe)
