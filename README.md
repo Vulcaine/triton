@@ -174,7 +174,6 @@ If you need multiple filament targets, use:
 ```bash
 triton add lua sol2
 triton add lua:Game sol2:Game
-triton add lua sol2 Game 
 triton add org/repo@tag:Renderer 
 ```
 

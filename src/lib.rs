@@ -11,6 +11,7 @@ pub mod commands {
     pub mod remove;
     pub mod script;
     pub mod add;
+    pub mod testcmd;
 
     pub use add::handle_add;
     pub use link::handle_link;

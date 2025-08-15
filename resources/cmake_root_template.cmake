@@ -1,7 +1,8 @@
-# cmake_root_template.cmake
-
 cmake_minimum_required(VERSION 3.25)
 project(triton_components LANGUAGES CXX)
+
+# Enable CTest globally so `ctest` works
+enable_testing()
 
 # === Global MSVC settings ===
 if(MSVC)

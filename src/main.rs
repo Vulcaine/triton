@@ -11,8 +11,8 @@ mod util;
 
 use cli::{Cli, Commands};
 use commands::{
-    handle_add, handle_build, handle_init, handle_link, handle_remove, handle_run,
-    handle_script, // NEW
+    handle_add, handle_build, handle_init, handle_link, handle_remove, handle_run, handle_script,
+    handle_test,
 };
 use std::borrow::Cow;
 
@@ -44,12 +44,13 @@ fn main() -> Result<()> {
         Commands::Remove { pkg, component, features, host } =>
             handle_remove(&pkg, opt_str(&component), opt_str(&features), host),
 
-        Commands::Generate =>
-            {
-                let root: models::TritonRoot = util::read_json("triton.json")?;
-                for (n, c) in &root.components { cmake::rewrite_component_cmake(n, &root, c)?; }
-                cmake::regenerate_root_cmake(&root)
+        Commands::Generate => {
+            let root: models::TritonRoot = util::read_json("triton.json")?;
+            for (n, c) in &root.components {
+                cmake::rewrite_component_cmake(n, &root, c)?;
             }
+            cmake::regenerate_root_cmake(&root)
+        }
 
         Commands::Build { path, config, clean, cleanf } =>
             handle_build(&path, &config, clean, cleanf),
@@ -62,6 +63,10 @@ fn main() -> Result<()> {
             handle_link(&from, &to)
         }
 
-        Commands::Script(v) => handle_script(&v),
+        Commands::Script(v) =>
+            handle_script(&v),
+
+        Commands::Test { path, config } =>
+            handle_test(&path, &config), // new arm
     }
 }

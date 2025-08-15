@@ -95,6 +95,15 @@ pub enum Commands {
         args: Vec<String>,
     },
 
+    Test {
+        /// Project root path (defaults to current dir)
+        #[arg(default_value = ".")]
+        path: String,
+        /// Config (debug|release)
+        #[arg(long, default_value = "debug")]
+        config: String,
+    },
+
     /// Any unknown subcommand is treated as a script name + args.
     #[command(external_subcommand)]
     Script(Vec<String>),
