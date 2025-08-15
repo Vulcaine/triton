@@ -10,7 +10,10 @@ mod templates;
 mod util;
 
 use cli::{Cli, Commands};
-use commands::{handle_add, handle_build, handle_init, handle_link, handle_remove, handle_run};
+use commands::{
+    handle_add, handle_build, handle_init, handle_link, handle_remove, handle_run,
+    handle_script, // NEW
+};
 use std::borrow::Cow;
 
 fn opt_str(opt: &Option<String>) -> Option<&str> { opt.as_deref() }
@@ -19,7 +22,7 @@ fn parse_edge<'a>(edge: &'a str, to: &'a Option<String>) -> Result<(Cow<'a, str>
     if let Some(t) = to.as_ref() {
         return Ok((Cow::from(edge), Cow::from(t.as_str())));
     }
-    if let Some((a, b)) = edge.split_once(":") {
+    if let Some((a, b)) = edge.split_once(':') {
         let from = a.trim();
         let to = b.trim();
         if !from.is_empty() && !to.is_empty() {
@@ -41,11 +44,12 @@ fn main() -> Result<()> {
         Commands::Remove { pkg, component, features, host } =>
             handle_remove(&pkg, opt_str(&component), opt_str(&features), host),
 
-        Commands::Generate => {
-            let root: models::TritonRoot = util::read_json("triton.json")?;
-            for (n, c) in &root.components { cmake::rewrite_component_cmake(n, &root, c)?; }
-            cmake::regenerate_root_cmake(&root)
-        }
+        Commands::Generate =>
+            {
+                let root: models::TritonRoot = util::read_json("triton.json")?;
+                for (n, c) in &root.components { cmake::rewrite_component_cmake(n, &root, c)?; }
+                cmake::regenerate_root_cmake(&root)
+            }
 
         Commands::Build { path, config, clean, cleanf } =>
             handle_build(&path, &config, clean, cleanf),
@@ -57,5 +61,7 @@ fn main() -> Result<()> {
             let (from, to) = parse_edge(&edge, &to)?;
             handle_link(&from, &to)
         }
+
+        Commands::Script(v) => handle_script(&v),
     }
 }
