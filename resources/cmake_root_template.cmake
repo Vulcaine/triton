@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
+
+# Disable vcpkg's MSBuild-style AppLocal DLL copy (we handle DLLs ourselves with TARGET_RUNTIME_DLLS)
+set(VCPKG_APPLOCAL_DEPS OFF CACHE BOOL "Disable vcpkg auto-copy of runtime DLLs" FORCE)
+
 project(triton_components LANGUAGES CXX)
 
 # Enable CTest globally so `ctest` works

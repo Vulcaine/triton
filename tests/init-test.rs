@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use tempfile::tempdir;
 
 use serial_test::serial;
@@ -8,24 +8,11 @@ use triton::commands::init::handle_init;
 use triton::models::TritonRoot;
 use triton::util::read_json;
 
-use fs_extra::dir::{copy as copy_dir, CopyOptions};
+mod test_utils;
+use test_utils::copy_offline_vcpkg_to;
 
 fn assert_exists(p: &Path) {
     assert!(p.exists(), "expected path to exist: {}", p.display());
-}
-
-/// Copies the pre-cloned offline vcpkg tree from `tests/vcpkg-offline` into `<proj>/vcpkg`.
-fn copy_offline_vcpkg_to<P: AsRef<Path>>(proj: P) {
-    let offline: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("vcpkg-offline");
-    let dest = proj.as_ref().join("vcpkg"); // ensure we place it under vcpkg/
-    let mut opts = CopyOptions::new();
-    opts.overwrite = true;
-    opts.copy_inside = true;
-    fs::create_dir_all(&dest).unwrap();
-    copy_dir(&offline, &dest, &opts)
-        .unwrap_or_else(|e| panic!("Failed to copy offline vcpkg: {e}"));
 }
 
 #[test]
@@ -177,4 +164,38 @@ fn init_is_idempotent_and_adds_missing_without_overwriting() {
     let meta: TritonRoot = read_json(proj.join("triton.json")).unwrap();
     let t = meta.components.get("tests").expect("tests component present");
     assert_eq!(t.kind, "exe");
+}
+
+#[test]
+#[serial]
+fn init_dot_does_not_create_app_component() {
+    let td = tempdir().unwrap();
+    let proj = td.path().join("dot-proj");
+    fs::create_dir_all(&proj).unwrap();
+    copy_offline_vcpkg_to(&proj);
+    std::env::set_current_dir(&proj).unwrap();
+
+    handle_init(Some("."), "x64-windows", "Ninja", "20").unwrap();
+
+    // Should have core files
+    assert_exists(&proj.join("triton.json"));
+    assert_exists(&proj.join("vcpkg.json"));
+    assert_exists(&proj.join("components/CMakeLists.txt"));
+    assert_exists(&proj.join("components/tests/src/test_main.cpp"));
+
+    // Must NOT have a component named after the folder
+    let app_dir = proj.join("components/dot-proj");
+    assert!(
+        !app_dir.exists(),
+        "triton init . should not scaffold an app component"
+    );
+
+    // Metadata check
+    let meta: TritonRoot = read_json(proj.join("triton.json")).unwrap();
+    assert_eq!(meta.app_name, "dot-proj");
+    assert!(meta.components.contains_key("tests"));
+    assert!(
+        !meta.components.contains_key("dot-proj"),
+        "no app component in minimal mode"
+    );
 }
