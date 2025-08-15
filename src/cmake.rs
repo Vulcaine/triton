@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 
 use crate::models::{GitDep, RootDep, TritonComponent, TritonRoot};
 use crate::templates::{cmake_root_helpers, components_dir_cmakelists};
@@ -21,13 +22,20 @@ pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
     body.push_str(cmake_root_helpers());
     body.push('\n');
 
-    // 3) managed subdirectories only (simple alphabetical; upgrade to topo if you want)
+    // 3) managed subdirectories (only if components/<name> exists)
     body.push_str("\n# Subdirectories (managed)\n# ## triton:components begin\n");
+
+    // Collect & sort component names, but emit add_subdirectory only for existing dirs.
     let mut names: Vec<_> = root.components.keys().cloned().collect();
     names.sort();
+
     for n in names {
-        body.push_str(&format!("add_subdirectory({n})\n"));
+        let dir = Path::new("components").join(&n);
+        if dir.is_dir() {
+            body.push_str(&format!("add_subdirectory({n})\n"));
+        }
     }
+
     body.push_str("# ## triton:components end\n");
 
     write_text_if_changed(path, &body).with_context(|| format!("writing {}", path))?;
@@ -316,9 +324,24 @@ fn gen_component_defines_lines(comp: &TritonComponent) -> Vec<String> {
     vec![format!("target_compile_definitions(${{_comp_name}} PRIVATE {})", parts.join(" "))]
 }
 
+/// Rewrite the component's CMakeLists.txt managed block.
+///
+/// IMPORTANT: **Does nothing** if `components/<name>` directory does **not** exist.
+/// This prevents accidentally creating phantom components (e.g., root folder name)
+/// during `triton generate` / `triton build`.
 pub fn rewrite_component_cmake(name: &str, root: &TritonRoot, comp: &TritonComponent) -> Result<()> {
-    let path = format!("components/{name}/CMakeLists.txt");
-    let base_raw = read_to_string_opt(&path).unwrap_or_else(|| {
+    let comp_dir = Path::new("components").join(name);
+    if !comp_dir.is_dir() {
+        // Skip silently: we only manage components that already exist on disk.
+        return Ok(());
+    }
+
+    let path = comp_dir.join("CMakeLists.txt");
+    let path_str = path.to_string_lossy().to_string();
+
+    let base_raw = read_to_string_opt(&path_str).unwrap_or_else(|| {
+        // Only provide a template if the directory exists (checked above).
+        // `tests` uses the test-mode component template; others use the regular one.
         crate::templates::component_cmakelists(name.eq_ignore_ascii_case("tests"))
     });
 
@@ -398,6 +421,6 @@ endif()"#;
     new_body.push_str(end);
     new_body.push_str(&post);
 
-    write_text_if_changed(&path, &new_body).with_context(|| format!("writing {}", path))?;
+    write_text_if_changed(&path_str, &new_body).with_context(|| format!("writing {}", path_str))?;
     Ok(())
 }
