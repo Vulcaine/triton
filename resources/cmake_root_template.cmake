@@ -358,6 +358,12 @@ endif() # end helper definitions
 # ## triton:components begin
 # ## triton:components end
 
+# ---- Tests integration (robust discovery on Windows/vcpkg) ----
+include(CTest)  # harmless if already included
+# Prefer discovering gtests at ctest time (after DLLs are copied by build steps)
+set(GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST CACHE STRING "Discover gtests at ctest time")
+# IMPORTANT: Do NOT add_subdirectory(tests) here; Triton injects it in the managed block above.
+
 # ---- FINAL SWEEP: apply iterator policy AFTER all targets exist ----
 if(MSVC AND TRITON_ENFORCE_MSVC_ITERATOR_LEVEL)
   get_property(_all_targets GLOBAL PROPERTY TARGETS)
