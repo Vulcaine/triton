@@ -37,6 +37,12 @@ if(WIN32 AND _is_exe)
       $<TARGET_FILE_DIR:${_comp_name}>
     COMMAND_EXPAND_LISTS
   )
+
+  # Ensure VS debugger / cmake launchers run inside exe folder
+  set_property(TARGET ${_comp_name} PROPERTY
+    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:${_comp_name}>")
+  set_property(TARGET ${_comp_name} PROPERTY
+    VS_DEBUGGER_ENVIRONMENT "PATH=$<TARGET_FILE_DIR:${_comp_name}>;%PATH%")
 endif()
 
 # Dependencies (managed by triton)
