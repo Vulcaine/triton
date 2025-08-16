@@ -1,4 +1,4 @@
-# Collect all test sources (any .cpp/.cc/.cxx anywhere under tests/src)
+# Collect all test sources
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc"
@@ -8,15 +8,11 @@ file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
 # Create the test executable
 add_executable(tests ${TEST_SOURCES})
 
-# Optional: nice IDE grouping
-source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" FILES ${TEST_SOURCES})
-
 # GoogleTest
 find_package(GTest CONFIG REQUIRED)
 target_link_libraries(tests PRIVATE
     GTest::gtest
     GTest::gtest_main
-    Engine
 )
 
 # C++ standard
@@ -26,7 +22,10 @@ set_property(TARGET tests PROPERTY CXX_STANDARD 20)
 enable_testing()
 include(GoogleTest)
 
-# On Windows, run discovery from the test exe directory (to find vcpkg DLLs)
+# Label all project tests so we can filter with: ctest -L triton
+set(_TRITON_TEST_LABEL "triton")
+
+# On Windows we must run discovery from exe dir (where DLLs get copied)
 if(WIN32)
   add_custom_command(TARGET tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -38,30 +37,21 @@ if(WIN32)
   gtest_discover_tests(tests
     WORKING_DIRECTORY $<TARGET_FILE_DIR:tests>
     DISCOVERY_MODE PRE_TEST
+    PROPERTIES LABELS ${_TRITON_TEST_LABEL}
   )
 
-  # Useful for VS "Debug Tests"
+  # Helpful for Visual Studio "Debug Tests"
   set_property(TARGET tests PROPERTY
     VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:tests>")
   set_property(TARGET tests PROPERTY
     VS_DEBUGGER_ENVIRONMENT "PATH=$<TARGET_FILE_DIR:tests>;%PATH%")
 else()
-  gtest_discover_tests(tests DISCOVERY_MODE PRE_TEST)
+  gtest_discover_tests(tests
+    DISCOVERY_MODE PRE_TEST
+    PROPERTIES LABELS ${_TRITON_TEST_LABEL}
+  )
 endif()
 
-# Wrapper test so tools that expect a single test still work
-# (harmless when also using gtest_discover_tests)
+# Wrapper so tools expecting a single test still work
 add_test(NAME all_tests COMMAND tests)
-
-# ## triton:deps begin
-# --- triton: resolve local target name ---
-if(NOT DEFINED _comp_name)
-  get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
-endif()
-
-# Link to the code under test (your Engine component)
-target_link_libraries(${_comp_name} PRIVATE Engine)
-if(EXISTS "${CMAKE_SOURCE_DIR}/Engine/include")
-  target_include_directories(${_comp_name} PRIVATE "${CMAKE_SOURCE_DIR}/Engine/include")
-endif()
-# ## triton:deps end
+set_tests_properties(all_tests PROPERTIES LABELS ${_TRITON_TEST_LABEL})

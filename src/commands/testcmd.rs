@@ -53,15 +53,30 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
         handle_build(path, cfg, false, false)?;
     }
 
-    // Run ALL tests by default (works with gtest_discover_tests).
+    // --- Test selection knobs ------------------------------------------------
+    //
+    // We default to running ONLY the project's own tests by label "triton".
     // You can override with:
-    //   TRITON_CTEST_FILTER="Regex"
-    //   TRITON_CTEST_LABEL="label"
-    //   TRITON_CTEST_JOBS="N"   (parallel ctest -j)
-    let label = std::env::var("TRITON_CTEST_LABEL").ok();
+    //   TRITON_CTEST_LABEL="*"     -> disable label filter (run all discovered tests)
+    //   TRITON_CTEST_LABEL="all"   -> same as "*"
+    //   TRITON_CTEST_LABEL=""      -> same as "*"
+    //   TRITON_CTEST_FILTER="Regex"-> narrows by test name (-R), only used when label is disabled
+    //   TRITON_CTEST_EXCLUDE="Rx"  -> exclude by test name (-E), useful for ad-hoc skipping
+    //   TRITON_CTEST_JOBS="N"      -> parallelism (ctest -j)
+    let label_env = std::env::var("TRITON_CTEST_LABEL").ok();
     let filter = std::env::var("TRITON_CTEST_FILTER").unwrap_or_else(|_| String::from(".*"));
+    let exclude = std::env::var("TRITON_CTEST_EXCLUDE").ok();
     let jobs = std::env::var("TRITON_CTEST_JOBS").ok();
 
+    // Effective label: default to "triton" unless user explicitly disables it.
+    // Disable if TRITON_CTEST_LABEL is "", "*", or "all" (case-insensitive).
+    let effective_label: Option<String> = match label_env.as_deref().map(|s| s.trim()) {
+        Some("") | Some("*") | Some("all") => None,
+        Some(s) => Some(s.to_string()),
+        None => Some("triton".to_string()),
+    };
+
+    // --- Build ctest command -------------------------------------------------
     let mut cmd = Command::new("ctest");
     cmd.current_dir(&build_dir).arg("--output-on-failure");
 
@@ -78,11 +93,18 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
         }
     }
 
-    if let Some(lbl) = label {
+    if let Some(lbl) = effective_label {
         cmd.arg("-L").arg(lbl);
-    } else if filter != ".*" {
-        // Only add -R if user gave a narrower regex; otherwise run everything
-        cmd.arg("-R").arg(filter);
+    } else {
+        // No label filter: allow optional include/exclude by name.
+        if filter != ".*" {
+            cmd.arg("-R").arg(filter);
+        }
+        if let Some(ex) = exclude {
+            if !ex.trim().is_empty() {
+                cmd.arg("-E").arg(ex.trim());
+            }
+        }
     }
 
     let status = cmd.status().context("failed to run ctest")?;
