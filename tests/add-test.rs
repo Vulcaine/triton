@@ -1,11 +1,10 @@
-// tests/add-test.rs
 use std::{env, fs, path::Path};
 use anyhow::Result;
 use serial_test::serial;
 
 use triton::{
     commands::handle_add,
-    models::TritonRoot,
+    models::{TritonRoot, DepSpec, LinkEntry},
     util::read_json,
 };
 
@@ -66,7 +65,6 @@ fn prepend_path(dir: &Path) -> (Option<std::ffi::OsString>, String) {
 }
 
 /// Create a no-op `vcpkg` in `bin_dir` and put it at the front of PATH.
-/// Also sets TRITON_VCPKG_EXE and VCPKG_EXE to the exact path.
 fn stub_vcpkg(bin_dir: &Path) -> std::path::PathBuf {
     fs::create_dir_all(bin_dir).unwrap();
     #[cfg(windows)]
@@ -97,7 +95,6 @@ fn with_temp_dir<F: FnOnce(&Path) -> Result<()>>(f: F) -> Result<()> {
     let t = tempfile::tempdir()?;
     let root = t.path().to_path_buf();
 
-    // Save / switch cwd
     let old_dir = env::current_dir()?;
     let old_path = env::var_os("PATH");
     let old_vcpkg_exe = env::var_os("VCPKG_EXE");
@@ -106,7 +103,6 @@ fn with_temp_dir<F: FnOnce(&Path) -> Result<()>>(f: F) -> Result<()> {
     env::set_current_dir(&root)?;
     let res = f(&root);
 
-    // Restore env + cwd
     match old_path { Some(v) => env::set_var("PATH", v), None => env::remove_var("PATH") }
     match old_vcpkg_exe { Some(v) => env::set_var("VCPKG_EXE", v), None => env::remove_var("VCPKG_EXE") }
     match old_triton_vcpkg_exe { Some(v) => env::set_var("TRITON_VCPKG_EXE", v), None => env::remove_var("TRITON_VCPKG_EXE") }
@@ -123,18 +119,14 @@ fn add_vcpkg_dep_updates_triton_and_manifest_and_calls_stub_vcpkg() -> Result<()
         init_min_triton_json(root);
         init_empty_vcpkg_manifest(root);
 
-        // Stub vcpkg to avoid a real install.
         let bin_dir = root.join("bin");
         stub_vcpkg(&bin_dir);
 
-        // Add a new vcpkg dep
         handle_add(&[String::from("glm")], None, false)?;
 
-        // triton.json contains "glm"
         let t = read_triton(root);
-        assert!(t.deps.iter().any(|d| matches!(d, triton::models::RootDep::Name(n) if n == "glm")));
+        assert!(t.deps.iter().any(|d| matches!(d, DepSpec::Simple(n) if n == "glm")));
 
-        // vcpkg.json contains "glm"
         let mani = read_vcpkg(root);
         let deps = mani["dependencies"].as_array().unwrap();
         assert!(deps.iter().any(|v| v == "glm"));
@@ -151,20 +143,16 @@ fn add_vcpkg_dep_with_component_scaffolds_and_links() -> Result<()> {
         init_empty_vcpkg_manifest(root);
         stub_vcpkg(&root.join("bin"));
 
-        // Add + link: "sdl2:Game"
         handle_add(&[String::from("sdl2:Game")], None, false)?;
 
-        // component directories exist
         assert!(root.join("components/Game/src").exists());
         assert!(root.join("components/Game/include").exists());
         assert!(root.join("components/Game/CMakeLists.txt").exists());
 
-        // triton.json has component + link entry
         let t = read_triton(root);
-        let game = t.components.get("Game").expect("Game component missing");
-        assert!(game.link.iter().any(|e| matches!(e, triton::models::LinkEntry::Name(n) if n == "sdl2")));
+        let game = t.components.get("Game").unwrap();
+        assert!(game.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == "sdl2")));
 
-        // vcpkg.json contains sdl2
         let mani = read_vcpkg(root);
         let deps = mani["dependencies"].as_array().unwrap();
         assert!(deps.iter().any(|v| v == "sdl2"));
@@ -178,25 +166,18 @@ fn add_vcpkg_dep_with_component_scaffolds_and_links() -> Result<()> {
 fn add_git_dep_records_and_links_without_clone_when_already_present() -> Result<()> {
     with_temp_dir(|root| {
         init_min_triton_json(root);
+        fs::create_dir_all(root.join("third_party/filament"))?;
 
-        // Pre-create third_party folder so `git clone` is skipped.
-        let third = root.join("third_party/filament");
-        fs::create_dir_all(&third)?;
-
-        // Add git dep + link to UI
         handle_add(&[String::from("google/filament@main:UI")], None, false)?;
 
         let t = read_triton(root);
-        // dep recorded as Git
         assert!(t.deps.iter().any(|d| matches!(d,
-            triton::models::RootDep::Git(g) if g.name == "filament" && g.repo == "google/filament"
+            DepSpec::Git(g) if g.name == "filament" && g.repo == "google/filament"
         )));
 
-        // component link present
-        let ui = t.components.get("UI").expect("UI component missing");
-        assert!(ui.link.iter().any(|e| matches!(e, triton::models::LinkEntry::Name(n) if n == "filament")));
+        let ui = t.components.get("UI").unwrap();
+        assert!(ui.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == "filament")));
 
-        // component scaffolded
         assert!(root.join("components/UI/src").exists());
         assert!(root.join("components/UI/include").exists());
         assert!(root.join("components/UI/CMakeLists.txt").exists());
@@ -214,17 +195,16 @@ fn add_vcpkg_dep_is_idempotent() -> Result<()> {
         stub_vcpkg(&root.join("bin"));
 
         handle_add(&[String::from("entt")], None, false)?;
-        // second add shouldn't duplicate
         handle_add(&[String::from("entt")], None, false)?;
 
         let t = read_triton(root);
-        let count = t.deps.iter().filter(|d| matches!(d, triton::models::RootDep::Name(n) if n == "entt")).count();
-        assert_eq!(count, 1, "dep duplicated in triton.json");
+        let count = t.deps.iter().filter(|d| matches!(d, DepSpec::Simple(n) if n == "entt")).count();
+        assert_eq!(count, 1);
 
         let mani = read_vcpkg(root);
         let deps = mani["dependencies"].as_array().unwrap();
         let count2 = deps.iter().filter(|v| *v == "entt").count();
-        assert_eq!(count2, 1, "dep duplicated in vcpkg.json");
+        assert_eq!(count2, 1);
 
         Ok(())
     })

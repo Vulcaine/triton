@@ -24,7 +24,7 @@ fn init_minimal_mode_creates_core_files_and_tests_but_no_app_scaffold() {
     copy_offline_vcpkg_to(&proj);
     std::env::set_current_dir(&proj).unwrap();
 
-    handle_init(Some("."), "x64-windows", "Unix Makefiles", "20").unwrap();
+    handle_init(Some("."), "x64-windows", "Unix Makefiles").unwrap();
 
     let comps = proj.join("components");
     assert_exists(&comps);
@@ -80,7 +80,7 @@ fn init_scaffold_mode_creates_app_component_manifest_and_tests() {
     fs::create_dir_all(&proj).unwrap();
     copy_offline_vcpkg_to(&proj);
 
-    handle_init(Some(app), "x64-windows", "Unix Makefiles", "20").unwrap();
+    handle_init(Some(app), "x64-windows", "Unix Makefiles").unwrap();
 
     let comps = proj.join("components");
 
@@ -128,7 +128,7 @@ fn init_is_idempotent_and_adds_missing_without_overwriting() {
 
     copy_offline_vcpkg_to(&proj);
 
-    handle_init(Some("proj-idem"), "x64-windows", "Ninja", "20").unwrap();
+    handle_init(Some("proj-idem"), "x64-windows", "Ninja").unwrap();
 
     let comps = proj.join("components");
     let tests_cpp = comps.join("tests/src/test_main.cpp");
@@ -147,7 +147,7 @@ fn init_is_idempotent_and_adds_missing_without_overwriting() {
     fs::write(&vcpkg_path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
     std::env::set_current_dir(&proj).unwrap();
-    handle_init(Some("."), "x64-windows", "Ninja", "20").unwrap();
+    handle_init(Some("."), "x64-windows", "Ninja").unwrap();
 
     let after = fs::read_to_string(&tests_cpp).unwrap();
     assert_eq!(after, "// KEEP ME\n");
@@ -175,7 +175,7 @@ fn init_dot_does_not_create_app_component() {
     copy_offline_vcpkg_to(&proj);
     std::env::set_current_dir(&proj).unwrap();
 
-    handle_init(Some("."), "x64-windows", "Ninja", "20").unwrap();
+    handle_init(Some("."), "x64-windows", "Ninja").unwrap();
 
     // Should have core files
     assert_exists(&proj.join("triton.json"));

@@ -3,7 +3,6 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use crate::cmake::detect_vcpkg_triplet;
 use crate::models::{DepSpec, LinkEntry, TritonComponent, TritonRoot};
 use crate::templates::{cmake_presets, component_cmakelists, components_dir_cmakelists};
 use crate::tools::ensure_ninja_dir;
@@ -12,8 +11,8 @@ use crate::util; // for read_json
 
 pub fn handle_init(
     name_opt: Option<&str>,
+    triplet: &str,
     generator: &str,
-    cxx_std: &str,
 ) -> Result<()> {
     let cwd = env::current_dir().context("cannot get current directory")?;
 
@@ -50,13 +49,12 @@ pub fn handle_init(
         write_text_if_changed("components/CMakeLists.txt", &components_dir_cmakelists())?,
     ));
 
-    // Always detect local triplet, override input
-    let trip = detect_vcpkg_triplet();
+    // Preserve user-passed triplet and generator
     _changes.push((
         "components/CMakePresets.json".into(),
         write_text_if_changed(
             "components/CMakePresets.json",
-            &cmake_presets(&app_name, generator, &trip),
+            &cmake_presets(&app_name, generator, triplet),
         )?,
     ));
 
@@ -66,9 +64,8 @@ pub fn handle_init(
     } else {
         let mut r = TritonRoot::default();
         r.app_name = app_name.clone();
-        r.triplet = trip.clone();
+        r.triplet = triplet.to_string();
         r.generator = generator.to_string();
-        r.cxx_std = cxx_std.to_string();
         r
     };
 
@@ -76,13 +73,10 @@ pub fn handle_init(
         root.app_name = app_name.clone();
     }
     if root.triplet.is_empty() {
-        root.triplet = trip.clone();
+        root.triplet = triplet.to_string();
     }
     if root.generator.is_empty() {
         root.generator = generator.to_string();
-    }
-    if root.cxx_std.is_empty() {
-        root.cxx_std = cxx_std.to_string();
     }
 
     // app scaffold

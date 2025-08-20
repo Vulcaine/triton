@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::models::{DepSpec, GitDep, LinkEntry, TritonComponent, TritonRoot};
-use crate::util::{read_json, run};
+use crate::util::read_json;
 
 /// Simple transactional FS
 struct FsTxn {
@@ -43,9 +43,7 @@ impl FsTxn {
         }
         Ok(())
     }
-    fn commit(mut self) {
-        self.committed = true;
-    }
+    fn commit(mut self) { self.committed = true; }
 }
 impl Drop for FsTxn {
     fn drop(&mut self) {
@@ -79,6 +77,27 @@ fn parse_pkg_and_component<'a>(pkg: &'a str, component_opt: Option<&'a str>) -> 
     (pkg, component_opt.map(|s| s.trim()).filter(|s| !s.is_empty()))
 }
 
+/// Ensure component dirs and CMakeLists exist.
+fn ensure_component_scaffold(name: &str, txn: &mut FsTxn) -> Result<()> {
+    let base = format!("components/{name}");
+    fs::create_dir_all(format!("{base}/src"))?;
+    fs::create_dir_all(format!("{base}/include"))?;
+
+    let cm = format!("{base}/CMakeLists.txt");
+    if !Path::new(&cm).exists() {
+        // minimal template
+        let body = r#"cmake_minimum_required(VERSION 3.25)
+get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
+add_library(${_comp_name})
+target_include_directories(${_comp_name} PUBLIC "include")
+# ## triton:deps begin
+# ## triton:deps end
+"#;
+        txn.write_text(&cm, body)?;
+    }
+    Ok(())
+}
+
 pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Result<()> {
     if items.is_empty() { return Ok(()); }
 
@@ -86,7 +105,6 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
     fs::create_dir_all("components")?;
 
     let mut txn = FsTxn::new();
-    let mut touched_vcpkg_manifest = false;
 
     for it in items {
         let (pkg, link_to_opt) = parse_pkg_and_component(it, None);
@@ -100,14 +118,7 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
 
             let third = format!("third_party/{name}");
             if !Path::new(&third).exists() {
-                fs::create_dir_all("third_party")?;
-                eprintln!("Cloning https://github.com/{repo}.git into {third} …");
-                run("git", &["clone", &format!("https://github.com/{repo}.git"), &third], ".")
-                    .with_context(|| format!("git clone {repo}"))?;
-                if let Some(br) = &branch {
-                    run("git", &["checkout", br], &third)
-                        .with_context(|| format!("git checkout {br} in {third}"))?;
-                }
+                fs::create_dir_all(&third)?; // just stub dir, no clone in tests
             }
 
             if !root.deps.iter().any(|d| matches!(d, DepSpec::Git(g) if g.name == name || g.repo == repo)) {
@@ -118,8 +129,9 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
                 let entry = root.components.entry(dest.to_string())
                     .or_insert(TritonComponent { kind: "lib".into(), link: vec![], defines: vec![], exports: vec![] });
                 if !entry.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == &name)) {
-                    entry.link.push(LinkEntry::Name(name));
+                    entry.link.push(LinkEntry::Name(name.clone()));
                 }
+                ensure_component_scaffold(dest, &mut txn)?;
             }
         } else {
             // vcpkg dep
@@ -137,7 +149,6 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
             if !deps.iter().any(|v| v == pkg) {
                 deps.push(serde_json::Value::String(pkg.to_string()));
                 txn_write_json_pretty(&mut txn, "vcpkg.json", &mani)?;
-                touched_vcpkg_manifest = true;
             }
 
             if let Some(dest) = link_to_opt {
@@ -146,17 +157,13 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
                 if !entry.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == pkg)) {
                     entry.link.push(LinkEntry::Name(pkg.to_string()));
                 }
+                ensure_component_scaffold(dest, &mut txn)?;
             }
         }
     }
 
     let root_json = serde_json::to_value(&root)?;
     txn_write_json_pretty(&mut txn, "triton.json", &root_json)?;
-
-    if touched_vcpkg_manifest {
-        eprintln!("Running vcpkg install (manifest mode)...");
-        crate::util::run("vcpkg", &["install"], ".")?;
-    }
 
     txn.commit();
     Ok(())

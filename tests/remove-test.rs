@@ -7,7 +7,7 @@ use tempfile::tempdir;
 use serial_test::serial;
 
 use triton::commands::remove::handle_remove;
-use triton::models::{LinkEntry, RootDep, TritonComponent, TritonRoot};
+use triton::models::{LinkEntry, DepSpec, TritonComponent, TritonRoot};
 use triton::util::{read_json, write_json_pretty_changed};
 
 fn assert_exists(p: &Path) {
@@ -47,7 +47,7 @@ fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
         triplet: "x64-windows".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
-        deps: vec![RootDep::Name("glm".into()), RootDep::Name("sdl2".into())],
+        deps: vec![DepSpec::Simple("glm".into()), DepSpec::Simple("sdl2".into())],
         components: Default::default(),
         scripts: HashMap::default(),
     };
@@ -80,7 +80,7 @@ fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
     // Assert: deps list unchanged; only A lost glm
     let after: TritonRoot = read_json("triton.json").unwrap();
     assert!(
-        after.deps.iter().any(|d| matches!(d, RootDep::Name(n) if n == "glm")),
+        after.deps.iter().any(|d| matches!(d, DepSpec::Simple(n) if n == "glm")),
         "glm must remain in root.deps when unlinking only from one component"
     );
     let a = after.components.get("A").unwrap();
@@ -117,7 +117,7 @@ fn remove_vcpkg_dep_globally_updates_manifest_and_unlinks_everywhere() {
         triplet: "x64-windows".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
-        deps: vec![RootDep::Name("glm".into()), RootDep::Name("sdl2".into())],
+        deps: vec![DepSpec::Simple("glm".into()), DepSpec::Simple("sdl2".into())],
         components: Default::default(),
         scripts: HashMap::default(),
     };
@@ -150,7 +150,7 @@ fn remove_vcpkg_dep_globally_updates_manifest_and_unlinks_everywhere() {
     // Assert: glm gone from deps and from all components; sdl2 remains
     let after: TritonRoot = read_json("triton.json").unwrap();
     assert!(
-        !matches!(after.deps.iter().find(|d| matches!(d, RootDep::Name(n) if n == "glm")), Some(_)),
+        !matches!(after.deps.iter().find(|d| matches!(d, DepSpec::Simple(n) if n == "glm")), Some(_)),
         "glm should be removed from root.deps"
     );
     for (name, comp) in &after.components {
@@ -182,7 +182,7 @@ fn remove_git_dep_globally_unlinks_everywhere_and_prunes_third_party_if_unused()
     std::env::set_current_dir(root).unwrap();
 
     // One git dep "filament" + a vcpkg dep to ensure vcpkg.json still valid
-    let git = RootDep::Git(triton::models::GitDep {
+    let git = DepSpec::Git(triton::models::GitDep {
         repo: "google/filament".into(),
         name: "filament".into(),
         branch: None,
@@ -194,7 +194,7 @@ fn remove_git_dep_globally_unlinks_everywhere_and_prunes_third_party_if_unused()
         triplet: "x64-windows".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
-        deps: vec![git, RootDep::Name("sdl2".into())],
+        deps: vec![git, DepSpec::Simple("sdl2".into())],
         components: Default::default(),
         scripts: HashMap::default(),
     };
@@ -225,7 +225,7 @@ fn remove_git_dep_globally_unlinks_everywhere_and_prunes_third_party_if_unused()
         after
             .deps
             .iter()
-            .find(|d| matches!(d, RootDep::Git(g) if g.name == "filament"))
+            .find(|d| matches!(d, DepSpec::Git(g) if g.name == "filament"))
             .is_none(),
         "git dep 'filament' should be removed from root.deps"
     );
@@ -258,7 +258,7 @@ fn remove_from_missing_component_returns_error() {
         triplet: "x64-windows".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
-        deps: vec![RootDep::Name("glm".into())],
+        deps: vec![DepSpec::Simple("glm".into())],
         components: Default::default(),
         scripts: HashMap::default(),
     };
