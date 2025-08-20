@@ -8,6 +8,22 @@ use crate::util::{
     cmake_quote, infer_cmake_type, read_to_string_opt, split_kv, write_text_if_changed,
 };
 
+pub fn dep_is_active(dep: &crate::models::DepSpec, name: &str, host_os: &str, triplet: &str) -> bool {
+    use crate::models::DepSpec;
+    match dep {
+        DepSpec::Simple(s) => s.eq_ignore_ascii_case(name),
+        DepSpec::Git(g)    => g.name.eq_ignore_ascii_case(name),
+        DepSpec::Detailed(d) => {
+            if !d.name.eq_ignore_ascii_case(name) {
+                return false;
+            }
+            let os_ok = d.os.is_empty() || d.os.iter().any(|o| o.eq_ignore_ascii_case(host_os));
+            let trip_ok = d.triplet.is_empty() || d.triplet.iter().any(|t| t.eq_ignore_ascii_case(triplet));
+            os_ok && trip_ok
+        }
+    }
+}
+
 pub fn detect_vcpkg_triplet() -> String {
     if cfg!(target_os = "windows") {
         if cfg!(target_arch = "x86_64") { "x64-windows".into() }

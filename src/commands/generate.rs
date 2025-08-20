@@ -1,20 +1,26 @@
 use anyhow::Result;
 use serde_json::json;
 
-use crate::cmake::{detect_vcpkg_triplet, regenerate_root_cmake, rewrite_component_cmake};
+use crate::cmake::{
+    dep_is_active, detect_vcpkg_triplet, regenerate_root_cmake, rewrite_component_cmake,
+};
 use crate::models::{DepSpec, TritonRoot};
 use crate::templates::cmake_presets;
 use crate::util::{read_json, write_text_if_changed};
 
 pub fn handle_generate() -> Result<()> {
-    eprintln!("Regenerating project CMake files...");
+    eprintln!("Regenerating project CMake + vcpkg manifest...");
     let root: TritonRoot = read_json("triton.json")?;
+
+    // Rewrite all component CMakeLists
     for (name, comp) in &root.components {
         rewrite_component_cmake(name, &root, comp)?;
     }
+
+    // Root CMake
     regenerate_root_cmake(&root)?;
 
-    // Always refresh CMakePresets.json for the host platform
+    // --- regenerate CMakePresets.json ---
     let trip = detect_vcpkg_triplet();
     eprintln!("detected triplet: {}", trip);
 
@@ -24,18 +30,28 @@ pub fn handle_generate() -> Result<()> {
     )?;
 
     // --- regenerate vcpkg.json ---
+    let host_os = std::env::consts::OS;
     let mut deps: Vec<String> = Vec::new();
+
     for dep in &root.deps {
         match dep {
-            DepSpec::Simple(s) => deps.push(s.clone()),
-            DepSpec::Git(_) => { /* git deps not in vcpkg manifest */ }
-            DepSpec::Detailed(d) => {
-                let mut spec = d.name.clone();
-                if !d.features.is_empty() {
-                    spec.push(':');
-                    spec.push_str(&d.features.join(","));
+            DepSpec::Simple(s) => {
+                if dep_is_active(dep, s, host_os, &trip) {
+                    deps.push(s.clone());
                 }
-                deps.push(spec);
+            }
+            DepSpec::Git(_) => {
+                // git deps handled via add_subdirectory, not vcpkg
+            }
+            DepSpec::Detailed(d) => {
+                if dep_is_active(dep, &d.name, host_os, &trip) {
+                    let mut spec = d.name.clone();
+                    if !d.features.is_empty() {
+                        spec.push(':');
+                        spec.push_str(&d.features.join(","));
+                    }
+                    deps.push(spec);
+                }
             }
         }
     }

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
+use crate::cmake::{dep_is_active, regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::{LinkEntry, TritonComponent, TritonRoot};
 use crate::util::{
     ensure_component_scaffold, has_link_to_name, is_dep, read_json, write_json_pretty_changed,
@@ -18,7 +18,7 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
     let from_is_dep = is_dep(&root, from);
     let to_is_dep = is_dep(&root, to);
 
-    // RHS ('to') must be a component; we don't support linking *into* a dep
+    // RHS ('to') must be a component
     if to_is_dep {
         anyhow::bail!(
             "Right-hand side '{}' is a dep. `triton link A:B` means 'B depends on A'. \
@@ -27,12 +27,17 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
         );
     }
 
-    // Helper to ensure a component entry exists (default "lib") + scaffold on disk
+    // Helper to ensure a component entry exists (default "lib") + scaffold
     let mut ensure_component_entry = |name: &str| {
         if !root.components.contains_key(name) {
             root.components.insert(
                 name.to_string(),
-                TritonComponent { kind: "lib".into(), link: vec![], defines: vec![], exports: vec![] },
+                TritonComponent {
+                    kind: "lib".into(),
+                    link: vec![],
+                    defines: vec![],
+                    exports: vec![],
+                },
             );
         }
         ensure_component_scaffold(name)
@@ -41,12 +46,30 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
     // 'to' must be a component (create if missing)
     ensure_component_entry(to)?;
 
-    // 'from' can be a dep or a component. If it's not a dep, ensure component exists.
+    // 'from' can be a dep or component
     if !from_is_dep {
         ensure_component_entry(from)?;
     }
 
-    // Add: B (to) depends on A (from) -> add 'from' into 'to'.link if not present
+    // --- validate dep applicability ---
+    if from_is_dep {
+        let host_os = std::env::consts::OS;
+        let triplet = &root.triplet;
+        let active = root
+            .deps
+            .iter()
+            .any(|d| dep_is_active(d, from, host_os, triplet));
+
+        if !active {
+            eprintln!(
+                "Warning: dep '{}' is not active for this platform/triplet. Skipping link.",
+                from
+            );
+            return Ok(()); // skip adding
+        }
+    }
+
+    // Add: B (to) depends on A (from)
     {
         let to_comp = root.components.get_mut(to).expect("component 'to' exists");
         if !has_link_to_name(to_comp, from) {
@@ -57,7 +80,7 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
     // Persist triton.json
     write_json_pretty_changed("triton.json", &root)?;
 
-    // Rewrite CMake for 'to' (and 'from' if we just created it as a new component)
+    // Rewrite CMake for 'to' (and 'from' if new component)
     if let Some(c) = root.components.get(to) {
         rewrite_component_cmake(to, &root, c)?;
     }
@@ -67,7 +90,7 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
         }
     }
 
-    // Regenerate the root (helpers + topo-sorted subdirs)
+    // Regenerate the root
     regenerate_root_cmake(&root)?;
 
     if from_is_dep {
