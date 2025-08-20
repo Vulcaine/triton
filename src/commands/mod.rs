@@ -6,6 +6,8 @@ pub mod run;
 pub mod link;
 pub mod script;
 pub mod testcmd;
+pub mod generate;
+pub mod install;
 
 pub use init::handle_init;
 pub use add::handle_add;
@@ -15,3 +17,5 @@ pub use run::handle_run;
 pub use link::handle_link;
 pub use script::handle_script;
 pub use testcmd::handle_test;
+pub use generate::handle_generate;
+pub use install::handle_install;

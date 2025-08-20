@@ -37,6 +37,7 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
         || {
             let preset = preset_for(cfg);
             let components_dir = Path::new(path).join("components");
+            // destructure properly
             let (_v, map) = load_presets(&components_dir)?;
             let mut guard = Vec::new();
             let effective_gen = resolve_generator_for_preset(&map, preset, &mut guard)
@@ -54,22 +55,12 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
     }
 
     // --- Test selection knobs ------------------------------------------------
-    //
-    // We default to running ONLY the project's own tests by label "triton".
-    // You can override with:
-    //   TRITON_CTEST_LABEL="*"     -> disable label filter (run all discovered tests)
-    //   TRITON_CTEST_LABEL="all"   -> same as "*"
-    //   TRITON_CTEST_LABEL=""      -> same as "*"
-    //   TRITON_CTEST_FILTER="Regex"-> narrows by test name (-R), only used when label is disabled
-    //   TRITON_CTEST_EXCLUDE="Rx"  -> exclude by test name (-E), useful for ad-hoc skipping
-    //   TRITON_CTEST_JOBS="N"      -> parallelism (ctest -j)
     let label_env = std::env::var("TRITON_CTEST_LABEL").ok();
     let filter = std::env::var("TRITON_CTEST_FILTER").unwrap_or_else(|_| String::from(".*"));
     let exclude = std::env::var("TRITON_CTEST_EXCLUDE").ok();
     let jobs = std::env::var("TRITON_CTEST_JOBS").ok();
 
     // Effective label: default to "triton" unless user explicitly disables it.
-    // Disable if TRITON_CTEST_LABEL is "", "*", or "all" (case-insensitive).
     let effective_label: Option<String> = match label_env.as_deref().map(|s| s.trim()) {
         Some("") | Some("*") | Some("all") => None,
         Some(s) => Some(s.to_string()),
@@ -81,7 +72,6 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
     cmd.current_dir(&build_dir).arg("--output-on-failure");
 
     // On multi-config generators, direct ctest to the right config.
-    // (Ignored by single-config generators like Ninja.)
     cmd.arg("-C").arg(match cfg.to_ascii_lowercase().as_str() {
         "release" | "rel" | "r" => "Release",
         _ => "Debug",
@@ -96,7 +86,6 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
     if let Some(lbl) = effective_label {
         cmd.arg("-L").arg(lbl);
     } else {
-        // No label filter: allow optional include/exclude by name.
         if filter != ".*" {
             cmd.arg("-R").arg(filter);
         }

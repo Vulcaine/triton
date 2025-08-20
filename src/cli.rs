@@ -15,9 +15,6 @@ pub enum Commands {
     Init {
         /// Project name (or '.' for minimal init in current folder)
         name: Option<String>,
-        /// vcpkg triplet
-        #[arg(long, default_value = "x64-windows")]
-        triplet: String,
         /// CMake generator
         #[arg(long, default_value = "Ninja")]
         generator: String,
@@ -68,7 +65,7 @@ pub enum Commands {
     /// Re-generate managed CMake blocks
     Generate,
 
-     /// Build
+    /// Build the project
     Build {
         /// Project root path (defaults to current dir)
         #[arg(default_value = ".")]
@@ -84,7 +81,7 @@ pub enum Commands {
         cleanf: bool,
     },
 
-    /// Run
+    /// Run a component (usually an executable target)
     Run {
         path: String,
         #[arg(long)]
@@ -95,6 +92,7 @@ pub enum Commands {
         args: Vec<String>,
     },
 
+    /// Run tests via CTest
     Test {
         /// Project root path (defaults to current dir)
         #[arg(default_value = ".")]

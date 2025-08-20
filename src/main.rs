@@ -11,12 +11,14 @@ mod util;
 
 use cli::{Cli, Commands};
 use commands::{
-    handle_add, handle_build, handle_init, handle_link, handle_remove, handle_run, handle_script,
-    handle_test,
+    handle_add, handle_build, handle_generate, handle_init, handle_link, handle_remove,
+    handle_run, handle_script, handle_test,
 };
 use std::borrow::Cow;
 
-fn opt_str(opt: &Option<String>) -> Option<&str> { opt.as_deref() }
+fn opt_str(opt: &Option<String>) -> Option<&str> {
+    opt.as_deref()
+}
 
 fn parse_edge<'a>(edge: &'a str, to: &'a Option<String>) -> Result<(Cow<'a, str>, Cow<'a, str>)> {
     if let Some(t) = to.as_ref() {
@@ -35,8 +37,8 @@ fn parse_edge<'a>(edge: &'a str, to: &'a Option<String>) -> Result<(Cow<'a, str>
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Init { name, triplet, generator, cxx_std } =>
-            handle_init(opt_str(&name), &triplet, &generator, &cxx_std),
+        Commands::Init { name, generator, cxx_std } =>
+            handle_init(opt_str(&name), &generator, &cxx_std),
 
         Commands::Add { items, features, host } =>
             handle_add(&items, opt_str(&features), host),
@@ -44,13 +46,8 @@ fn main() -> Result<()> {
         Commands::Remove { pkg, component, features, host } =>
             handle_remove(&pkg, opt_str(&component), opt_str(&features), host),
 
-        Commands::Generate => {
-            let root: models::TritonRoot = util::read_json("triton.json")?;
-            for (n, c) in &root.components {
-                cmake::rewrite_component_cmake(n, &root, c)?;
-            }
-            cmake::regenerate_root_cmake(&root)
-        }
+        Commands::Generate =>
+            handle_generate(),
 
         Commands::Build { path, config, clean, cleanf } =>
             handle_build(&path, &config, clean, cleanf),
@@ -67,6 +64,6 @@ fn main() -> Result<()> {
             handle_script(&v),
 
         Commands::Test { path, config } =>
-            handle_test(&path, &config), // new arm
+            handle_test(&path, &config),
     }
 }

@@ -7,19 +7,31 @@ pub struct TritonRoot {
     pub triplet: String,
     pub generator: String,
     pub cxx_std: String,
-    pub deps: Vec<RootDep>,
+
+    /// Top-level dependencies (vcpkg or git). Supports both simple and detailed forms.
+    pub deps: Vec<DepSpec>,
+
     pub components: BTreeMap<String, TritonComponent>,
+
     #[serde(default)]
     pub scripts: HashMap<String, String>,
 }
 
+/// Dependency specification (hybrid form).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum RootDep {
-    Name(String),
+pub enum DepSpec {
+    /// Simple string form: `"lua"`
+    Simple(String),
+
+    /// Git dependency (structured)
     Git(GitDep),
+
+    /// Detailed form with filters
+    Detailed(DepDetailed),
 }
 
+/// Git repository dependency
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitDep {
     pub repo: String,
@@ -43,6 +55,21 @@ impl Default for GitDep {
     }
 }
 
+/// More detailed dep form (with filters).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DepDetailed {
+    pub name: String,
+    /// Restrict to operating systems (values: "windows", "linux", "macos")
+    #[serde(default)]
+    pub os: Vec<String>,
+    /// Restrict to vcpkg triplets
+    #[serde(default)]
+    pub triplet: Vec<String>,
+    /// Additional vcpkg features
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
 /// Support either a structured cache entry or a raw `VAR=VAL`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -59,7 +86,9 @@ pub struct CMakeCacheEntry {
     #[serde(default = "default_cache_type")]
     pub typ: String,
 }
-fn default_cache_type() -> String { "STRING".into() }
+fn default_cache_type() -> String {
+    "STRING".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TritonComponent {
@@ -90,7 +119,6 @@ pub enum LinkEntry {
         #[serde(default)]
         targets: Option<Vec<String>>,
     },
-    // Kept for backwards compatibility if you ever used a map form earlier
     Map(BTreeMap<String, LinkHint>),
 }
 
@@ -107,8 +135,7 @@ impl LinkEntry {
     pub fn normalize(&self) -> (String, Option<String>) {
         match self {
             LinkEntry::Name(n) => (n.clone(), None),
-            LinkEntry::Named { name, package, .. } =>
-                (name.clone(), package.clone()),
+            LinkEntry::Named { name, package, .. } => (name.clone(), package.clone()),
             LinkEntry::Map(map) => {
                 if let Some((k, v)) = map.iter().next() {
                     (k.clone(), v.package.clone())
@@ -122,18 +149,10 @@ impl LinkEntry {
     /// Return all explicit targets if provided (for multi-target git/vcpkg entries).
     pub fn all_targets(&self) -> Vec<String> {
         match self {
-            LinkEntry::Named { targets, .. } => {
-                if let Some(ts) = targets {
-                    ts.clone()
-                } else {
-                    vec![]
-                }
-            }
+            LinkEntry::Named { targets, .. } => targets.clone().unwrap_or_default(),
             LinkEntry::Map(map) => {
                 if let Some((_k, v)) = map.iter().next() {
-                    if let Some(ts) = &v.targets {
-                        return ts.clone();
-                    }
+                    return v.targets.clone().unwrap_or_default();
                 }
                 vec![]
             }

@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{ Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs;
-use std::{env, path::{Path, PathBuf}};
+use std::{path::{Path}};
 use std::process::Command;
 
-use crate::models::{RootDep, TritonComponent, TritonRoot};
+use crate::models::{DepSpec, TritonComponent, TritonRoot};
 use crate::templates::component_cmakelists;
 
 #[derive(Debug, Clone, Copy)]
@@ -12,42 +12,6 @@ pub enum Change {
     Created,
     Modified,
     Unchanged,
-}
-
-fn which_in_path(candidates: &[&str]) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
-    for dir in env::split_paths(&path) {
-        for name in candidates {
-            let p = dir.join(name);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
-/// Locate vcpkg:
-/// 1) TRITON_VCPKG_EXE
-/// 2) VCPKG_EXE
-/// 3) PATH (vcpkg.exe / vcpkg.bat / vcpkg.cmd on Windows, vcpkg on *nix)
-pub fn vcpkg_exe_path() -> Result<PathBuf> {
-    if let Some(p) = env::var_os("TRITON_VCPKG_EXE").filter(|v| !v.is_empty()) {
-        let pb = PathBuf::from(p);
-        if pb.is_file() { return Ok(pb); }
-    }
-    if let Some(p) = env::var_os("VCPKG_EXE").filter(|v| !v.is_empty()) {
-        let pb = PathBuf::from(p);
-        if pb.is_file() { return Ok(pb); }
-    }
-    if cfg!(windows) {
-        if let Some(p) = which_in_path(&["vcpkg.exe", "vcpkg.bat", "vcpkg.cmd"]) {
-            return Ok(p);
-        }
-    } else if let Some(p) = which_in_path(&["vcpkg"]) {
-        return Ok(p);
-    }
-    Err(anyhow!("Could not find vcpkg in TRITON_VCPKG_EXE / VCPKG_EXE / PATH"))
 }
 
 pub fn read_to_string_opt<P: AsRef<Path>>(p: P) -> Option<String> {
@@ -110,8 +74,9 @@ pub fn ensure_component_scaffold(name: &str) -> Result<()> {
 
 pub fn is_dep(root: &TritonRoot, name: &str) -> bool {
     root.deps.iter().any(|d| match d {
-        RootDep::Name(n) => n == name,
-        RootDep::Git(g) => g.name == name,
+        DepSpec::Simple(n) => n == name,
+        DepSpec::Git(g) => g.name == name,
+        DepSpec::Detailed(dd) => dd.name == name,
     })
 }
 
