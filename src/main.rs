@@ -9,11 +9,12 @@ mod tools;
 mod templates;
 mod util;
 
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, CmakeCommands};
 use commands::{
     handle_add, handle_build, handle_generate, handle_init, handle_link, handle_remove,
-    handle_run, handle_script, handle_test,
+    handle_run, handle_script, handle_test, handle_cmake_install
 };
+
 use std::borrow::Cow;
 
 fn opt_str(opt: &Option<String>) -> Option<&str> {
@@ -60,10 +61,14 @@ fn main() -> Result<()> {
             handle_link(&from, &to)
         }
 
-        Commands::Script(v) =>
-            handle_script(&v),
-
         Commands::Test { path, config } =>
             handle_test(&path, &config),
+
+        Commands::Cmake { cmd } => match cmd {
+            CmakeCommands::Install { version } => handle_cmake_install(version),
+        },
+
+        Commands::Script(v) =>
+            handle_script(&v),
     }
 }

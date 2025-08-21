@@ -57,6 +57,34 @@ pub fn run(exe: impl AsRef<Path>, args: &[&str], cwd: impl AsRef<Path>) -> Resul
     Ok(())
 }
 
+/// Convert paths to a form that plays nicely with CMake and Windows shells.
+/// - Strip leading verbatim prefix (`\\?\` or `//?/`) if present (CMake 4.1+ often uses this).
+/// - On Windows, return backslashes `\`.
+/// - On non-Windows, return forward slashes `/`.
+pub fn normalize_path<P: AsRef<Path>>(p: P) -> String {
+    let mut s = p.as_ref().to_string_lossy().into_owned();
+
+    // Strip Windows verbatim prefixes if present
+    if s.starts_with(r"\\?\") {
+        // remove the leading \\?\
+        s = s.replacen(r"\\?\", "", 1);
+    } else if s.starts_with("//?/") {
+        // remove the leading //?/
+        s = s.replacen("//?/", "", 1);
+    }
+
+    // Normalize separators per-platform
+    if cfg!(windows) {
+        // Use backslashes on Windows
+        s = s.replace('/', r"\");
+    } else {
+        // Use forward slashes elsewhere
+        s = s.replace('\\', "/");
+    }
+
+    s
+}
+
 pub fn ensure_component_scaffold(name: &str) -> Result<()> {
     let base = format!("components/{name}");
     fs::create_dir_all(format!("{base}/src"))?;

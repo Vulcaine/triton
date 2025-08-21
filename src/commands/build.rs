@@ -7,11 +7,11 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
+use crate::cmake::{effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::TritonRoot;
 use crate::templates::cmake_presets;
 use crate::tools::{ensure_ninja_dir, ensure_vcpkg};
-use crate::util::read_json;
+use crate::util::{normalize_path, read_json};
 use crate::commands::handle_install;
 
 //
@@ -100,7 +100,6 @@ pub fn resolve_generator_for_preset(
     }
     None
 }
-
 // === Main build entrypoint ===
 pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Result<()> {
     let project = PathBuf::from(path)
@@ -144,14 +143,17 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
         }
     }
 
-    // --- ensure vcpkg (returns toolchain file path as String) ---
-    let vcpkg_toolchain = ensure_vcpkg(&project)?;
+    // --- ensure vcpkg (returns toolchain file + exe path) ---
+    let (vcpkg_toolchain, vcpkg_exe) = ensure_vcpkg(&project)?;
 
     // Load project model
     let root: TritonRoot = read_json(project.join("triton.json"))?;
 
     // --- Install packages ---
-    handle_install(&root, &project)?;
+    handle_install(&root, &project, &vcpkg_exe)?;
+
+    // Determine effective CMake version tuple (system if >= MIN, else MIN)
+    let cmake_ver = effective_cmake_version();
 
     // Filter only existing components
     let existing: Vec<String> = root
@@ -170,14 +172,14 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
     regenerate_root_cmake(&root_filtered)?;
     for name in existing {
         if let Some(comp) = root.components.get(&name) {
-            rewrite_component_cmake(&name, &root, comp)?;
+            rewrite_component_cmake(&name, &root, comp, cmake_ver)?;
         }
     }
 
-    // Ensure CMakePresets.json
+    // Ensure/refresh CMakePresets.json (write if missing)
     let presets_path = components_dir.join("CMakePresets.json");
     if !presets_path.exists() {
-        let text = cmake_presets(&root.app_name, &root.generator, &root.triplet);
+        let text = cmake_presets(&root.app_name, &root.generator, &root.triplet, cmake_ver);
         fs::write(&presets_path, text)?;
     }
 
@@ -197,20 +199,9 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
     // --- Configure ---
     if !is_configured_for_generator(&build_dir, &effective_gen) {
         fs::create_dir_all(&build_dir)?;
-        let mut configure_line = format!("cmake --preset {}", preset);
-        if let Some(dir) = &ninja_abs_dir {
-            let ninja_bin = if cfg!(windows) {
-                dir.join("ninja.exe")
-            } else {
-                dir.join("ninja")
-            };
-            configure_line.push_str(&format!(" -DCMAKE_MAKE_PROGRAM=\"{}\"", ninja_bin.display()));
-        }
-        configure_line.push_str(&format!(" -DCMAKE_TOOLCHAIN_FILE={}", vcpkg_toolchain));
-
         let mut cmd = Command::new("cmake");
         cmd.arg("--preset").arg(preset).current_dir(&components_dir);
-        cmd.arg(format!("-DCMAKE_TOOLCHAIN_FILE={}", vcpkg_toolchain));
+        cmd.arg(format!("-DCMAKE_TOOLCHAIN_FILE={}", normalize_path(vcpkg_toolchain)));
         if let Some(dir) = &ninja_abs_dir {
             let existing = env::var_os("PATH").unwrap_or_default();
             let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
@@ -251,3 +242,4 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
     eprintln!("Built at {}", build_dir.display());
     Ok(())
 }
+

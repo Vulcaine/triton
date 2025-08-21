@@ -62,6 +62,9 @@ pub struct DepDetailed {
     /// Restrict to operating systems (values: "windows", "linux", "macos")
     #[serde(default)]
     pub os: Vec<String>,
+    /// Override vcpkg package name (if different from `name`)
+    #[serde(default)]
+    pub package: Option<String>,
     /// Restrict to vcpkg triplets
     #[serde(default)]
     pub triplet: Vec<String>,

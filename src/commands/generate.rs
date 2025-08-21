@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::cmake::{
-    dep_is_active, detect_vcpkg_triplet, regenerate_root_cmake, rewrite_component_cmake,
+    dep_is_active, detect_vcpkg_triplet, effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake
 };
 use crate::models::{DepSpec, TritonRoot};
 use crate::templates::cmake_presets;
@@ -12,9 +12,11 @@ pub fn handle_generate() -> Result<()> {
     eprintln!("Regenerating project CMake + vcpkg manifest...");
     let root: TritonRoot = read_json("triton.json")?;
 
+    let cmake_ver = effective_cmake_version();
+
     // Rewrite all component CMakeLists
     for (name, comp) in &root.components {
-        rewrite_component_cmake(name, &root, comp)?;
+        rewrite_component_cmake(name, &root, comp, cmake_ver)?;
     }
 
     // Root CMake
@@ -26,7 +28,7 @@ pub fn handle_generate() -> Result<()> {
 
     write_text_if_changed(
         "components/CMakePresets.json",
-        &cmake_presets(&root.app_name, &root.generator, &trip),
+        &cmake_presets(&root.app_name, &root.generator, &trip, cmake_ver),
     )?;
 
     // --- regenerate vcpkg.json ---
@@ -40,9 +42,7 @@ pub fn handle_generate() -> Result<()> {
                     deps.push(s.clone());
                 }
             }
-            DepSpec::Git(_) => {
-                // git deps handled via add_subdirectory, not vcpkg
-            }
+            DepSpec::Git(_) => {}
             DepSpec::Detailed(d) => {
                 if dep_is_active(dep, &d.name, host_os, &trip) {
                     let mut spec = d.name.clone();

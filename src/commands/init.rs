@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+use crate::cmake::effective_cmake_version;
 use crate::models::{DepSpec, LinkEntry, TritonComponent, TritonRoot};
 use crate::templates::{cmake_presets, component_cmakelists, components_dir_cmakelists};
 use crate::tools::ensure_ninja_dir;
@@ -49,12 +50,15 @@ pub fn handle_init(
         write_text_if_changed("components/CMakeLists.txt", &components_dir_cmakelists())?,
     ));
 
+    // Parse our minimum CMake version once and pass to templates
+    let cmake_ver = effective_cmake_version();
+
     // Preserve user-passed triplet and generator
     _changes.push((
         "components/CMakePresets.json".into(),
         write_text_if_changed(
             "components/CMakePresets.json",
-            &cmake_presets(&app_name, generator, triplet),
+            &cmake_presets(&app_name, generator, triplet, cmake_ver),
         )?,
     ));
 
@@ -154,7 +158,11 @@ int main(int argc, char **argv) {
             exports: vec![],
         });
 
-    if !root.deps.iter().any(|d| matches!(d, DepSpec::Simple(n) if n.eq_ignore_ascii_case("gtest"))) {
+    if !root
+        .deps
+        .iter()
+        .any(|d| matches!(d, DepSpec::Simple(n) if n.eq_ignore_ascii_case("gtest")))
+    {
         root.deps.push(DepSpec::Simple("gtest".into()));
     }
 
@@ -183,7 +191,10 @@ int main(int argc, char **argv) {
         vcpkg_doc["dependencies"] = serde_json::json!([]);
     }
     let deps = vcpkg_doc["dependencies"].as_array_mut().unwrap();
-    if !deps.iter().any(|d| d.is_string() && d.as_str().unwrap().eq_ignore_ascii_case("gtest")) {
+    if !deps
+        .iter()
+        .any(|d| d.is_string() && d.as_str().unwrap().eq_ignore_ascii_case("gtest"))
+    {
         deps.push(serde_json::json!("gtest"));
     }
     _changes.push((

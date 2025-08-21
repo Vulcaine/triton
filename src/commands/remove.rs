@@ -2,12 +2,20 @@ use anyhow::Result;
 use std::fs;
 use std::path::Path;
 
-use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
+use crate::cmake::{
+    effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake
+};
 use crate::models::{DepSpec, TritonRoot};
 use crate::util::{read_json, write_json_pretty_changed, write_text_if_changed};
 
-pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&str>, _host: bool) -> Result<()> {
+pub fn handle_remove(
+    pkg: &str,
+    component_opt: Option<&str>,
+    _features: Option<&str>,
+    _host: bool,
+) -> Result<()> {
     let mut root: TritonRoot = read_json("triton.json")?;
+    let cmake_ver = effective_cmake_version();
 
     // If a component is specified, only unlink from that component.
     if let Some(comp_name) = component_opt {
@@ -24,9 +32,9 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&
         write_json_pretty_changed("triton.json", &root)?;
 
         for (name, comp) in &root.components {
-            rewrite_component_cmake(name, &root, comp)?;
+            rewrite_component_cmake(name, &root, comp, cmake_ver)?;
         }
-        regenerate_root_cmake(&root)?;
+        regenerate_root_cmake(&root)?; 
 
         eprintln!("Unlinked '{}' from component '{}'.", pkg, comp_name);
         return Ok(());
@@ -78,9 +86,9 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&
     }
 
     for (name, comp) in &root.components {
-        rewrite_component_cmake(name, &root, comp)?;
+        rewrite_component_cmake(name, &root, comp, cmake_ver)?;
     }
-    regenerate_root_cmake(&root)?;
+    regenerate_root_cmake(&root)?; // ✅ fixed here too
     eprintln!("Removed '{}' from project.", pkg);
     Ok(())
 }

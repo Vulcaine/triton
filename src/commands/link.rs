@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::cmake::{dep_is_active, regenerate_root_cmake, rewrite_component_cmake};
+use crate::cmake::{dep_is_active, effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::{LinkEntry, TritonComponent, TritonRoot};
 use crate::util::{
     ensure_component_scaffold, has_link_to_name, is_dep, read_json, write_json_pretty_changed,
@@ -80,13 +80,14 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
     // Persist triton.json
     write_json_pretty_changed("triton.json", &root)?;
 
+    let cmake_ver = effective_cmake_version();
     // Rewrite CMake for 'to' (and 'from' if new component)
     if let Some(c) = root.components.get(to) {
-        rewrite_component_cmake(to, &root, c)?;
+        rewrite_component_cmake(to, &root, c, cmake_ver)?;
     }
     if !from_is_dep {
         if let Some(c) = root.components.get(from) {
-            rewrite_component_cmake(from, &root, c)?;
+            rewrite_component_cmake(from, &root, c, cmake_ver)?;
         }
     }
 

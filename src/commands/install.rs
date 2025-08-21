@@ -1,20 +1,19 @@
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::models::TritonRoot;
 
-/// Install all vcpkg deps valid for current host.
-pub fn handle_install(root: &TritonRoot, project: &Path) -> Result<()> {
+/// Install all vcpkg deps valid for current host, using the project-local vcpkg binary.
+pub fn handle_install(root: &TritonRoot, project: &Path, vcpkg_exe: &PathBuf) -> Result<()> {
     // ensure vcpkg.json is up-to-date
     crate::commands::handle_generate()?;  
 
-    let triplet = &root.triplet;
     eprintln!("Running vcpkg install with manifest mode...");
 
-    let status = Command::new("vcpkg")
+    let status = Command::new(vcpkg_exe)
         .arg("install")
-        .arg(format!("--triplet={}", triplet))
+        .arg(format!("--triplet={}", root.triplet))
         .current_dir(project)
         .status()
         .context("failed to run vcpkg install")?;

@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Ensure vcpkg is cloned locally, and bootstrap if missing.
-/// Returns path to the vcpkg toolchain file.
-pub fn ensure_vcpkg(project: &Path) -> Result<String> {
+/// Returns (toolchain file path, path to vcpkg executable).
+pub fn ensure_vcpkg(project: &Path) -> Result<(String, PathBuf)> {
     let vcpkg_dir = project.join("vcpkg");
     if !vcpkg_dir.exists() {
         eprintln!("Cloning vcpkg...");
@@ -21,7 +21,13 @@ pub fn ensure_vcpkg(project: &Path) -> Result<String> {
     #[cfg(not(windows))]
     let bootstrap = vcpkg_dir.join("bootstrap-vcpkg.sh");
 
-    if !vcpkg_dir.join("vcpkg").exists() && !vcpkg_dir.join("vcpkg.exe").exists() {
+    let vcpkg_exe = if cfg!(windows) {
+        vcpkg_dir.join("vcpkg.exe")
+    } else {
+        vcpkg_dir.join("vcpkg")
+    };
+
+    if !vcpkg_exe.exists() {
         eprintln!("Bootstrapping vcpkg...");
         let status = if cfg!(windows) {
             Command::new("cmd")
@@ -40,5 +46,12 @@ pub fn ensure_vcpkg(project: &Path) -> Result<String> {
         }
     }
 
-    Ok(vcpkg_dir.join("scripts").join("buildsystems").join("vcpkg.cmake").display().to_string())
+    let toolchain = vcpkg_dir
+        .join("scripts")
+        .join("buildsystems")
+        .join("vcpkg.cmake")
+        .display()
+        .to_string();
+
+    Ok((toolchain, vcpkg_exe))
 }

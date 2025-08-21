@@ -1,5 +1,3 @@
-cmake_minimum_required(VERSION 3.25)
-
 # Detect target name from directory
 get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
 

@@ -1,3 +1,5 @@
+// cli.rs
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -30,10 +32,7 @@ pub enum Commands {
     ///   triton add lua->demo sol2->demo
     ///   triton add lua sol2 demo   # if 'demo' is an existing component, link both to it
     Add {
-        /// One or more items. Each item may be:
-        /// - "pkg" (vcpkg), "org/repo[@branch]" (git), or "pkg->component" (link sugar).
         items: Vec<String>,
-
         #[arg(long)]
         features: Option<String>,
         #[arg(long)]
@@ -42,18 +41,13 @@ pub enum Commands {
 
     /// Link component A to component B (target_link_libraries(A PRIVATE B))
     Link {
-        /// Either `A B` or `A:B`. If two args are provided, both are used.
         edge: String,
         to: Option<String>,
     },
 
     /// Remove a package or unlink it from a specific component
-    ///
-    /// - `triton remove <pkg>`: remove from project deps and unlink from all components.
-    /// - `triton remove <pkg> --component X`: only unlink from component X (keep dep).
     Remove {
         pkg: String,
-        /// If provided, only unlink the pkg from this component.
         #[arg(long)]
         component: Option<String>,
         #[arg(long)]
@@ -67,16 +61,12 @@ pub enum Commands {
 
     /// Build the project
     Build {
-        /// Project root path (defaults to current dir)
         #[arg(default_value = ".")]
         path: String,
-        /// Configuration preset (debug|release)
         #[arg(long, default_value = "debug")]
         config: String,
-        /// Interactively confirm cleaning build/<config> before building
         #[arg(long, conflicts_with = "cleanf")]
         clean: bool,
-        /// Force clean build/<config> without prompting
         #[arg(long)]
         cleanf: bool,
     },
@@ -94,15 +84,35 @@ pub enum Commands {
 
     /// Run tests via CTest
     Test {
-        /// Project root path (defaults to current dir)
         #[arg(default_value = ".")]
         path: String,
-        /// Config (debug|release)
         #[arg(long, default_value = "debug")]
         config: String,
+    },
+
+    /// Manage cmake (installation helpers)
+    Cmake {
+        #[command(subcommand)]
+        cmd: CmakeCommands,
     },
 
     /// Any unknown subcommand is treated as a script name + args.
     #[command(external_subcommand)]
     Script(Vec<String>),
+}
+
+#[derive(Subcommand)]
+pub enum CmakeCommands {
+    /// Ensure cmake >= <version> is installed (tries package managers cross-platform)
+    ///
+    /// Usage:
+    ///   triton cmake install --version 3.30.1
+    ///
+    /// If --version is omitted, Triton uses the project's required version.
+    Install {
+        /// Minimum CMake version to ensure (e.g. "3.30.1").
+        /// If omitted, uses the version from `effective_cmake_version()`.
+        #[arg(long)]
+        version: Option<String>,
+    },
 }
