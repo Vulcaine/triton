@@ -529,9 +529,16 @@ fn gen_component_link_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<St
             lines.push(format!(
                 "target_link_libraries(${{_comp_name}} PRIVATE {name})"
             ));
+            // Existing: include/<…>
             lines.push(format!(
                 "if(EXISTS \"${{CMAKE_SOURCE_DIR}}/{n}/include\")
   target_include_directories(${{_comp_name}} PRIVATE \"${{CMAKE_SOURCE_DIR}}/{n}/include\")
+endif()",
+                n = name
+            ));
+            lines.push(format!(
+                "if(EXISTS \"${{CMAKE_SOURCE_DIR}}/{n}\")
+  target_include_directories(${{_comp_name}} PRIVATE \"${{CMAKE_SOURCE_DIR}}/{n}\")
 endif()",
                 n = name
             ));

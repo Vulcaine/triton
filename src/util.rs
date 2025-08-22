@@ -85,20 +85,40 @@ pub fn normalize_path<P: AsRef<Path>>(p: P) -> String {
     s
 }
 
-pub fn ensure_component_scaffold(name: &str) -> Result<()> {
-    let base = format!("components/{name}");
-    fs::create_dir_all(format!("{base}/src"))?;
-    fs::create_dir_all(format!("{base}/include"))?;
+pub fn ensure_component_scaffold(name: &str) -> anyhow::Result<()> {
+    use std::fs;
+    use std::io::Write;
+    use std::path::Path;
 
-    let cm = format!("{base}/CMakeLists.txt");
-    if !Path::new(&cm).exists() {
-        let is_test = name.eq_ignore_ascii_case("tests");
-        write_text_if_changed(&cm, &component_cmakelists(is_test))
-            .with_context(|| format!("writing {}", cm))?;
+    // components/<name>/
+    let base = Path::new("components").join(name);
+    fs::create_dir_all(&base)?;
+
+    // components/<name>/src/<name> and components/<name>/include/<name>
+    let src_dir = base.join("src").join(name);
+    let inc_dir = base.join("include").join(name);
+    fs::create_dir_all(&src_dir)?;
+    fs::create_dir_all(&inc_dir)?;
+
+    // Minimal placeholder header so includes like <Name/Name.hpp> resolve.
+    let header_path = inc_dir.join(format!("{name}.hpp"));
+    if !header_path.exists() {
+        let mut f = fs::File::create(&header_path)?;
+        writeln!(f, "#pragma once")?;
+        writeln!(f, "// {} public headers live under this folder.", name)?;
+    }
+
+    // Minimal placeholder source (no main()).
+    let source_path = src_dir.join(format!("{name}.cpp"));
+    if !source_path.exists() {
+        let mut f = fs::File::create(&source_path)?;
+        writeln!(f, "#include <{0}/{0}.hpp>", name)?;
+        writeln!(f, "// Implementation files for {} live here.", name)?;
     }
 
     Ok(())
 }
+
 
 pub fn is_dep(root: &TritonRoot, name: &str) -> bool {
     root.deps.iter().any(|d| match d {
