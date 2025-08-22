@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, HashMap};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TritonRoot {
     pub app_name: String,
-    pub triplet: String,
     pub generator: String,
     pub cxx_std: String,
 
@@ -105,6 +104,13 @@ pub struct TritonComponent {
     /// Any component that depends on this one will inherit these usage requirements.
     #[serde(default)]
     pub exports: Vec<String>,
+
+    /// Relative folders or files inside this component directory to be staged
+    /// next to the produced exe/lib (copied to `$<TARGET_FILE_DIR:...>`).
+    /// Example in `components/Game/triton.json`:
+    ///   "assets": ["assets", "shaders", "data/config.json"]
+    #[serde(default)]
+    pub assets: Vec<String>,
 }
 
 /// Allow three forms inside `components.<name>.link`:
@@ -134,7 +140,7 @@ pub struct LinkHint {
 }
 
 impl LinkEntry {
-    /// Canonicalize into (name, package_hint, first_target_hint)
+    /// Canonicalize into (name, package_hint)
     pub fn normalize(&self) -> (String, Option<String>) {
         match self {
             LinkEntry::Name(n) => (n.clone(), None),

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::cmake::{dep_is_active, effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake};
+use crate::cmake::{dep_is_active, detect_vcpkg_triplet, effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::{LinkEntry, TritonComponent, TritonRoot};
 use crate::util::{
     ensure_component_scaffold, has_link_to_name, is_dep, read_json, write_json_pretty_changed,
@@ -37,6 +37,7 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
                     link: vec![],
                     defines: vec![],
                     exports: vec![],
+                    assets: vec![],
                 },
             );
         }
@@ -54,11 +55,11 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
     // --- validate dep applicability ---
     if from_is_dep {
         let host_os = std::env::consts::OS;
-        let triplet = &root.triplet;
+        let triplet = detect_vcpkg_triplet();
         let active = root
             .deps
             .iter()
-            .any(|d| dep_is_active(d, from, host_os, triplet));
+            .any(|d| dep_is_active(d, from, host_os, &triplet));
 
         if !active {
             eprintln!(

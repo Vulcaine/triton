@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::cmake::detect_vcpkg_triplet;
 use crate::models::TritonRoot;
 
 /// Install all vcpkg deps valid for current host, using the project-local vcpkg binary.
@@ -13,7 +14,7 @@ pub fn handle_install(root: &TritonRoot, project: &Path, vcpkg_exe: &PathBuf) ->
 
     let status = Command::new(vcpkg_exe)
         .arg("install")
-        .arg(format!("--triplet={}", root.triplet))
+        .arg(format!("--triplet={}", detect_vcpkg_triplet()))
         .current_dir(project)
         .status()
         .context("failed to run vcpkg install")?;

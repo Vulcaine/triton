@@ -68,7 +68,6 @@ pub fn handle_init(
     } else {
         let mut r = TritonRoot::default();
         r.app_name = app_name.clone();
-        r.triplet = triplet.to_string();
         r.generator = generator.to_string();
         r
     };
@@ -76,9 +75,7 @@ pub fn handle_init(
     if root.app_name.is_empty() {
         root.app_name = app_name.clone();
     }
-    if root.triplet.is_empty() {
-        root.triplet = triplet.to_string();
-    }
+
     if root.generator.is_empty() {
         root.generator = generator.to_string();
     }
@@ -110,6 +107,7 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
                     link: vec![],
                     defines: vec![],
                     exports: vec![],
+                    assets: vec![],
                 });
         }
     }
@@ -156,6 +154,7 @@ int main(int argc, char **argv) {
             link: vec![LinkEntry::Name("GTest".into())],
             defines: vec![],
             exports: vec![],
+            assets: vec![],
         });
 
     if !root

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::process::Command; 
+use std::process::Command;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
@@ -18,8 +18,6 @@ pub fn parse_cmake_version(ver: &str) -> (u32, u32, u32) {
     let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
     (major, minor, patch)
 }
-
-
 
 /// Return the system's `cmake --version` string (e.g. "3.30.2"), if cmake is on PATH.
 pub fn system_cmake_version() -> anyhow::Result<Option<String>> {
@@ -43,7 +41,6 @@ pub fn system_cmake_version() -> anyhow::Result<Option<String>> {
     }
 }
 
-
 /// Normalize OS strings from config into canonical values.
 /// Only canonical OS values are allowed ("windows", "macos", "linux").
 /// Rejects arch-suffixed names like "win32", "win64", "mac32", "mac64", "linux32", "linux64".
@@ -64,9 +61,6 @@ fn normalize_os(os: &str) -> Result<&'static str, String> {
 }
 
 /// Check whether a dependency is active for this host OS + triplet.
-/// - `os` filters (normalized) are compared against host OS.
-/// - `triplet` filters must match full triplet (e.g. "x64-windows").
-/// - Both must pass (if defined).
 pub fn dep_is_active(
     dep: &crate::models::DepSpec,
     name: &str,
@@ -364,18 +358,17 @@ fn build_effective_vcpkg_specs(
         }
         let public = comp.exports.contains(&name);
 
-        // find explicit package name from root depspec
+        // If your DepDetailed has an optional 'package' in your codebase, use it here.
         let pkg_override = root.deps.iter().find_map(|d| {
             if let DepSpec::Detailed(dd) = d {
-                #[allow(deprecated)]
-                {
-                    // If your DepDetailed has an optional 'package' field in your codebase,
-                    // use it here. If not, this will always be None and pkg_hint (from link entry)
-                    // remains the only hint.
-                    // e.g.: return dd.package.clone();
+                if dd.name.eq_ignore_ascii_case(&name) {
+                    dd.package.clone()
+                } else {
+                    None
                 }
+            } else {
+                None
             }
-            None
         });
 
         if seen.insert(name.clone()) {
@@ -566,6 +559,60 @@ fn gen_component_defines_lines(comp: &TritonComponent) -> Vec<String> {
     )]
 }
 
+/// Generate CMake lines that copy declared assets next to the produced exe/lib.
+/// For each entry in `component.assets`, we treat it as a path relative to the component dir.
+/// - If it's a directory: copy the whole directory to `$<TARGET_FILE_DIR:...>/<name>`
+/// - If it's a file: copy the file to the target dir, preserving the filename.
+fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> {
+    if comp.assets.is_empty() {
+        return vec![];
+    }
+
+    let mut lines = vec![];
+    lines.push("# --- triton: stage component assets next to target ---".into());
+    for a in &comp.assets {
+        let a = a.trim();
+        if a.is_empty() {
+            continue;
+        }
+        // Use configure-time checks (EXISTS/IS_DIRECTORY). Copy at build time.
+        lines.push(format!("set(_triton_asset_src \"${{CMAKE_CURRENT_SOURCE_DIR}}/{a}\")"));
+        lines.push("if(EXISTS \"${_triton_asset_src}\")".into());
+        lines.push(format!(
+            "  set(_triton_asset_dst_dir \"$<TARGET_FILE_DIR:${{_comp_name}}>\")"
+        ));
+        // Ensure target dir exists
+        lines.push(format!(
+            "  add_custom_command(TARGET ${{_comp_name}} POST_BUILD COMMAND \"${{CMAKE_COMMAND}}\" -E make_directory \"${{_triton_asset_dst_dir}}\")"
+        ));
+        // If directory, copy_directory to a subfolder with the same name
+        lines.push("  if(IS_DIRECTORY \"${_triton_asset_src}\")".into());
+        lines.push(format!(
+            "    get_filename_component(_triton_asset_name \"${{_triton_asset_src}}\" NAME)"
+        ));
+        lines.push(format!(
+            "    add_custom_command(TARGET ${{_comp_name}} POST_BUILD \
+             COMMAND \"${{CMAKE_COMMAND}}\" -E copy_directory \"${{_triton_asset_src}}\" \
+             \"${{_triton_asset_dst_dir}}/${{_triton_asset_name}}\")"
+        ));
+        // Else, single file copy
+        lines.push("  else()".into());
+        lines.push(format!(
+            "    add_custom_command(TARGET ${{_comp_name}} POST_BUILD \
+             COMMAND \"${{CMAKE_COMMAND}}\" -E copy_if_different \"${{_triton_asset_src}}\" \
+             \"${{_triton_asset_dst_dir}}\")"
+        ));
+        lines.push("  endif()".into());
+        lines.push("else()".into());
+        lines.push(format!(
+            "  message(WARNING \"triton: asset path not found for '${{_comp_name}}': ${{_triton_asset_src}}\")"
+        ));
+        lines.push("endif()".into());
+    }
+    lines.push(String::new());
+    lines
+}
+
 pub fn rewrite_component_cmake(
     name: &str,
     root: &TritonRoot,
@@ -669,6 +716,13 @@ endif()"#;
 
     dep_lines.extend(gen_component_link_lines(root, comp));
 
+    // --- Assets: copy to $<TARGET_FILE_DIR:...> after build ---
+    let assets_lines = gen_component_assets_lines(comp);
+    if !assets_lines.is_empty() {
+        dep_lines.push(String::new());
+        dep_lines.extend(assets_lines);
+    }
+
     // Assemble final
     let mut new_body = String::new();
     new_body.push_str(&pre);
@@ -692,7 +746,6 @@ endif()"#;
 
     Ok(())
 }
-
 
 /// Helper: pick effective cmake version (system if >= MIN, else MIN).
 pub fn effective_cmake_version() -> (u32, u32, u32) {

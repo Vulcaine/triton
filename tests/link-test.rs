@@ -68,7 +68,6 @@ fn init_project(tmp: &Path, deps: &[DepSpec]) {
     fs::create_dir_all(tmp.join("components")).unwrap();
     let root = TritonRoot {
         app_name: "demo".into(),
-        triplet: "x64-windows".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
         deps: deps.to_vec(),
@@ -134,6 +133,7 @@ fn link_component_to_component_is_rhs_directional() {
                 link: vec![],
                 defines: vec![],
                 exports: vec![],
+                assets: vec![],
             },
         );
         write_json_pretty_changed("triton.json", &proj).unwrap();

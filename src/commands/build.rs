@@ -5,9 +5,9 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
-use crate::cmake::{effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake};
+use crate::cmake::{detect_vcpkg_triplet, effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::TritonRoot;
 use crate::templates::cmake_presets;
 use crate::tools::{ensure_ninja_dir, ensure_vcpkg};
@@ -100,6 +100,92 @@ pub fn resolve_generator_for_preset(
     }
     None
 }
+
+/// Windows-only helpers to load the MSVC env via VsDevCmd so Ninja+MSVC works from a plain shell.
+#[cfg(windows)]
+fn vsdevcmd_path() -> Option<PathBuf> {
+    let vswhere = PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
+    if !vswhere.exists() {
+        return None;
+    }
+    let out = Command::new(&vswhere)
+        .args([
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        return None;
+    }
+    let mut p = PathBuf::from(s);
+    p.push(r"Common7\Tools\VsDevCmd.bat");
+    if p.exists() { Some(p) } else { None }
+}
+
+#[cfg(windows)]
+fn win_norm(p: &Path) -> String {
+    let mut s = p.to_string_lossy().to_string();
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        s = rest.to_string();
+    }
+    s.replace('/', r"\")
+}
+
+#[cfg(windows)]
+fn write_batch_and_run(
+    cwd: &Path,
+    vsdevcmd: &Path,
+    prepend_path: Option<&Path>,
+    commands: &[&str],
+) -> Result<ExitStatus> {
+    use std::fs::File;
+    use std::io::Write;
+
+    let tmp_dir = cwd.join(".triton").join("tmp");
+    fs::create_dir_all(&tmp_dir)?;
+    let bat_path = tmp_dir.join("run-msvc-env.cmd");
+
+    let vs = win_norm(vsdevcmd);
+    let mut bat = String::new();
+    bat.push_str("@echo off\r\n");
+    bat.push_str("setlocal\r\n");
+    bat.push_str(&format!("call \"{}\" -arch=x64\r\n", vs));
+    if let Some(p) = prepend_path {
+        let pp = win_norm(p);
+        bat.push_str(&format!("set PATH={};%PATH%\r\n", pp));
+    }
+    // Avoid inheriting random compilers
+    bat.push_str("set CC=\r\nset CXX=\r\n");
+
+    for c in commands {
+        bat.push_str(c);
+        bat.push_str("\r\n");
+        bat.push_str("if errorlevel 1 exit /b %errorlevel%\r\n");
+    }
+    bat.push_str("endlocal\r\n");
+
+    let mut f = File::create(&bat_path)?;
+    f.write_all(bat.as_bytes())?;
+
+    let status = Command::new("cmd")
+        .arg("/C")
+        .arg(win_norm(&bat_path))
+        .current_dir(cwd)
+        .status()
+        .context("failed to run batch in MSVC env")?;
+    Ok(status)
+}
+
 // === Main build entrypoint ===
 pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Result<()> {
     let project = PathBuf::from(path)
@@ -179,7 +265,7 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
     // Ensure/refresh CMakePresets.json (write if missing)
     let presets_path = components_dir.join("CMakePresets.json");
     if !presets_path.exists() {
-        let text = cmake_presets(&root.app_name, &root.generator, &root.triplet, cmake_ver);
+        let text = cmake_presets(&root.app_name, &root.generator, &detect_vcpkg_triplet(), cmake_ver);
         fs::write(&presets_path, text)?;
     }
 
@@ -199,47 +285,117 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
     // --- Configure ---
     if !is_configured_for_generator(&build_dir, &effective_gen) {
         fs::create_dir_all(&build_dir)?;
-        let mut cmd = Command::new("cmake");
-        cmd.arg("--preset").arg(preset).current_dir(&components_dir);
-        cmd.arg(format!("-DCMAKE_TOOLCHAIN_FILE={}", normalize_path(vcpkg_toolchain)));
-        if let Some(dir) = &ninja_abs_dir {
-            let existing = env::var_os("PATH").unwrap_or_default();
-            let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
-            parts.insert(0, dir.clone());
-            cmd.env("PATH", env::join_paths(parts).unwrap());
-            let ninja_bin = if cfg!(windows) {
-                dir.join("ninja.exe")
-            } else {
-                dir.join("ninja")
-            };
-            cmd.arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja_bin.display()));
-        }
-        cmd.env_remove("CC");
-        cmd.env_remove("CXX");
-        let status = cmd.status().context("cmake configure failed")?;
 
-        if !status.success() {
-            anyhow::bail!("cmake configure failed for preset {}", preset);
+        // Common pieces
+        let toolchain_arg = format!(
+            "-DCMAKE_TOOLCHAIN_FILE=\"{}\"",
+            normalize_path(vcpkg_toolchain)
+        );
+
+        #[cfg(windows)]
+        let using_ninja_on_windows = effective_gen.eq_ignore_ascii_case("ninja");
+        #[cfg(not(windows))]
+        let using_ninja_on_windows = false;
+
+        if using_ninja_on_windows {
+            // Build the commandline we want to run inside the VS dev environment
+            let mut configure_line = format!("cmake --preset {}", preset);
+            configure_line.push(' ');
+            configure_line.push_str(&toolchain_arg);
+
+            // Prefer MSVC `cl` when using the x64-windows triplet
+            configure_line.push_str(" -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe");
+
+            // Add portable Ninja path and point CMake to it
+            let mut prepend: Option<PathBuf> = None;
+            if let Some(dir) = &ninja_abs_dir {
+                prepend = Some(dir.clone());
+                let ninja_bin = dir.join("ninja.exe");
+                configure_line.push_str(&format!(" -DCMAKE_MAKE_PROGRAM=\"{}\"", ninja_bin.display()));
+            }
+
+            let vs = vsdevcmd_path().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Visual Studio Build Tools not found. Install 'Desktop development with C++' \
+                     (or run in a Developer Command Prompt)."
+                )
+            })?;
+            let status = write_batch_and_run(
+                &components_dir,
+                &vs,
+                prepend.as_deref(),
+                &[configure_line.as_str()],
+            )?;
+            if !status.success() {
+                anyhow::bail!("cmake configure failed for preset {}", preset);
+            }
+        } else {
+            // Non-Windows, or non-Ninja on Windows: run directly
+            let mut cmd = Command::new("cmake");
+            cmd.arg("--preset").arg(preset).current_dir(&components_dir);
+            cmd.arg(toolchain_arg);
+            if let Some(dir) = &ninja_abs_dir {
+                let existing = env::var_os("PATH").unwrap_or_default();
+                let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
+                parts.insert(0, dir.clone());
+                cmd.env("PATH", env::join_paths(parts).unwrap());
+                let ninja_bin = if cfg!(windows) {
+                    dir.join("ninja.exe")
+                } else {
+                    dir.join("ninja")
+                };
+                cmd.arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja_bin.display()));
+            }
+            // avoid leaking CC/CXX from environment
+            cmd.env_remove("CC");
+            cmd.env_remove("CXX");
+
+            let status = cmd.status().context("cmake configure failed")?;
+            if !status.success() {
+                anyhow::bail!("cmake configure failed for preset {}", preset);
+            }
         }
     }
 
     // --- Build ---
-    let mut b = Command::new("cmake");
-    b.arg("--build")
-        .arg(format!("--preset={}", preset))
-        .current_dir(&components_dir);
-    if let Some(dir) = &ninja_abs_dir {
-        let existing = env::var_os("PATH").unwrap_or_default();
-        let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
-        parts.insert(0, dir.clone());
-        b.env("PATH", env::join_paths(parts).unwrap());
-    }
-    let status = b.status().context("cmake build failed")?;
-    if !status.success() {
-        anyhow::bail!("build failed for preset {}", preset);
+    #[cfg(windows)]
+    let using_ninja_on_windows = effective_gen.eq_ignore_ascii_case("ninja");
+    #[cfg(not(windows))]
+    let using_ninja_on_windows = false;
+
+    if using_ninja_on_windows {
+        let mut prepend: Option<PathBuf> = None;
+        if let Some(dir) = &ninja_abs_dir {
+            prepend = Some(dir.clone());
+        }
+        let vs = vsdevcmd_path().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Visual Studio Build Tools not found. Install 'Desktop development with C++' \
+                 (or run in a Developer Command Prompt)."
+            )
+        })?;
+        let build_line = format!("cmake --build --preset={}", preset);
+        let status = write_batch_and_run(&components_dir, &vs, prepend.as_deref(), &[&build_line])?;
+        if !status.success() {
+            anyhow::bail!("build failed for preset {}", preset);
+        }
+    } else {
+        let mut b = Command::new("cmake");
+        b.arg("--build")
+            .arg(format!("--preset={}", preset))
+            .current_dir(&components_dir);
+        if let Some(dir) = &ninja_abs_dir {
+            let existing = env::var_os("PATH").unwrap_or_default();
+            let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
+            parts.insert(0, dir.clone());
+            b.env("PATH", env::join_paths(parts).unwrap());
+        }
+        let status = b.status().context("cmake build failed")?;
+        if !status.success() {
+            anyhow::bail!("build failed for preset {}", preset);
+        }
     }
 
     eprintln!("Built at {}", build_dir.display());
     Ok(())
 }
-
