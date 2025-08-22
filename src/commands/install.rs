@@ -6,7 +6,7 @@ use crate::cmake::detect_vcpkg_triplet;
 use crate::models::TritonRoot;
 
 /// Install all vcpkg deps valid for current host, using the project-local vcpkg binary.
-pub fn handle_install(root: &TritonRoot, project: &Path, vcpkg_exe: &PathBuf) -> Result<()> {
+pub fn handle_install(_root: &TritonRoot, project: &Path, vcpkg_exe: &PathBuf) -> Result<()> {
     // ensure vcpkg.json is up-to-date
     crate::commands::handle_generate()?;  
 

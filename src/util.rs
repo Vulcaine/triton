@@ -5,7 +5,6 @@ use std::{path::{Path}};
 use std::process::Command;
 
 use crate::models::{DepSpec, TritonComponent, TritonRoot};
-use crate::templates::component_cmakelists;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Change {
