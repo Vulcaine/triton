@@ -119,6 +119,10 @@ pub struct TritonComponent {
     /// e.g. `["vendor/dotnet/libnethost.a"]`
     #[serde(default)]
     pub vendor_libs: Vec<String>,
+    /// Asset paths (relative to the component root) to stage next to the target
+    /// incrementally.  Directories are mirrored; files are copied if changed.
+    #[serde(default)]
+    pub assets: Vec<String>,
 }
 
 /// Linker options — either a flat list (all platforms) or a map keyed by "linux"/"macos"/"windows".

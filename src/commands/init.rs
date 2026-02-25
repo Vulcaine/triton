@@ -110,6 +110,7 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
                     resources: vec![],
                     link_options: Default::default(),
                     vendor_libs: vec![],
+                    assets: vec![],
                 });
         }
     }
@@ -159,6 +160,7 @@ int main(int argc, char **argv) {
             resources: vec![],
             link_options: Default::default(),
             vendor_libs: vec![],
+            assets: vec![],
         });
 
     if !root

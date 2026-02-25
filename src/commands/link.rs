@@ -40,6 +40,7 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
                     resources: vec![],
                     link_options: Default::default(),
                     vendor_libs: vec![],
+                    assets: vec![],
                 },
             );
         }

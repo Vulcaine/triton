@@ -630,6 +630,89 @@ fn gen_component_defines_lines(comp: &TritonComponent) -> Vec<String> {
     )]
 }
 
+/// Generate CMake lines that copy declared assets next to the produced exe/lib,
+/// incrementally. For each entry in `component.assets` (relative to component dir):
+///  - Directory: mirror to `$<TARGET_FILE_DIR:...>/<basename>`; deletions handled.
+///  - File: copy into `$<TARGET_FILE_DIR:...>` if changed.
+/// Each copy rule produces a stamp file in the binary dir and we depend on all
+/// stamps via a `${_comp_name}_assets` target wired into the component.
+fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> {
+    if comp.assets.is_empty() {
+        return vec![];
+    }
+
+    // Helper to turn an asset path into a CMake-variable-safe id
+    let make_id = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect()
+    };
+
+    let mut lines = vec![];
+    lines.push("# --- triton: stage component assets next to target (incremental) ---".into());
+    lines.push("set(_triton_asset_stamps)".into());
+
+    for raw in &comp.assets {
+        let a = raw.trim();
+        if a.is_empty() {
+            continue;
+        }
+        let id = make_id(a);
+
+        // Variables unique per asset
+        //   _triton_asset_src_<id>
+        //   _triton_asset_dst_<id>
+        //   _triton_asset_name_<id>
+        //   _triton_asset_files_<id>
+        //   _triton_asset_stamp_<id>
+        lines.push(format!("set(_triton_asset_src_{id} \"${{CMAKE_CURRENT_SOURCE_DIR}}/{a}\")"));
+        lines.push(format!("if(EXISTS \"${{_triton_asset_src_{id}}}\")"));
+        lines.push(format!("  if(IS_DIRECTORY \"${{_triton_asset_src_{id}}}\")"));
+        lines.push(format!("    get_filename_component(_triton_asset_name_{id} \"${{_triton_asset_src_{id}}}\" NAME)"));
+        lines.push(format!("    set(_triton_asset_dst_{id} \"$<TARGET_FILE_DIR:${{_comp_name}}>/${{_triton_asset_name_{id}}}\")"));
+        lines.push(format!("    set(_triton_asset_stamp_{id} \"${{CMAKE_CURRENT_BINARY_DIR}}/${{_comp_name}}_assets_{id}.stamp\")"));
+        lines.push(format!("    file(GLOB_RECURSE _triton_asset_files_{id} CONFIGURE_DEPENDS \"${{_triton_asset_src_{id}}}/*\")"));
+        lines.push("    add_custom_command(".into());
+        lines.push(format!("      OUTPUT \"${{_triton_asset_stamp_{id}}}\""));
+        lines.push(format!("      COMMAND \"${{CMAKE_COMMAND}}\" -E make_directory \"${{_triton_asset_dst_{id}}}\""));
+        lines.push(format!("      COMMAND \"${{CMAKE_COMMAND}}\" -E remove_directory \"${{_triton_asset_dst_{id}}}\""));
+        lines.push(format!("      COMMAND \"${{CMAKE_COMMAND}}\" -E make_directory \"${{_triton_asset_dst_{id}}}\""));
+        lines.push(format!("      COMMAND \"${{CMAKE_COMMAND}}\" -E copy_directory \"${{_triton_asset_src_{id}}}\" \"${{_triton_asset_dst_{id}}}\""));
+        lines.push(format!("      COMMAND \"${{CMAKE_COMMAND}}\" -E touch \"${{_triton_asset_stamp_{id}}}\""));
+        lines.push(format!("      DEPENDS ${{_triton_asset_files_{id}}} \"${{CMAKE_BINARY_DIR}}/CMakeCache.txt\""));
+        lines.push(format!("      COMMENT \"Syncing assets (dir): ${{_triton_asset_src_{id}}} -> ${{_triton_asset_dst_{id}}}\""));
+        lines.push("      VERBATIM".into());
+        lines.push("    )".into());
+        lines.push(format!("    list(APPEND _triton_asset_stamps \"${{_triton_asset_stamp_{id}}}\")"));
+        lines.push("  else()".into());
+        lines.push(format!("    set(_triton_asset_dst_{id} \"$<TARGET_FILE_DIR:${{_comp_name}}>\")"));
+        lines.push(format!("    set(_triton_asset_stamp_{id} \"${{CMAKE_CURRENT_BINARY_DIR}}/${{_comp_name}}_assets_{id}.stamp\")"));
+        lines.push("    add_custom_command(".into());
+        lines.push(format!("      OUTPUT \"${{_triton_asset_stamp_{id}}}\""));
+        lines.push(format!("      COMMAND \"${{CMAKE_COMMAND}}\" -E make_directory \"${{_triton_asset_dst_{id}}}\""));
+        lines.push(format!("      COMMAND \"${{CMAKE_COMMAND}}\" -E copy_if_different \"${{_triton_asset_src_{id}}}\" \"${{_triton_asset_dst_{id}}}\""));
+        lines.push(format!("      COMMAND \"${{CMAKE_COMMAND}}\" -E touch \"${{_triton_asset_stamp_{id}}}\""));
+        lines.push(format!("      DEPENDS \"${{_triton_asset_src_{id}}}\" \"${{CMAKE_BINARY_DIR}}/CMakeCache.txt\""));
+        lines.push(format!("      COMMENT \"Copy asset file: ${{_triton_asset_src_{id}}} -> ${{_triton_asset_dst_{id}}}\""));
+        lines.push("      VERBATIM".into());
+        lines.push("    )".into());
+        lines.push(format!("    list(APPEND _triton_asset_stamps \"${{_triton_asset_stamp_{id}}}\")"));
+        lines.push("  endif()".into());
+        lines.push("else()".into());
+        lines.push(format!("  message(WARNING \"triton: asset path not found for '${{_comp_name}}': ${{_triton_asset_src_{id}}}\")"));
+        lines.push("endif()".into());
+    }
+
+    lines.push("if(_triton_asset_stamps)".into());
+    lines.push("  add_custom_target(${_comp_name}_assets ALL DEPENDS ${_triton_asset_stamps})".into());
+    lines.push("  add_dependencies(${_comp_name} ${_comp_name}_assets)".into());
+    lines.push("endif()".into());
+    lines.push(String::new());
+
+    lines
+}
+
+
 pub fn rewrite_component_cmake(
     name: &str,
     root: &TritonRoot,
