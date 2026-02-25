@@ -12,7 +12,13 @@ pub fn handle_install(_root: &TritonRoot, project: &Path, vcpkg_exe: &PathBuf) -
 
     eprintln!("Running vcpkg install with manifest mode...");
 
-    let status = Command::new(vcpkg_exe)
+    // Use the project-local vcpkg binary (bootstrapped by ensure_vcpkg).
+    #[cfg(windows)]
+    let vcpkg_bin = project.join("vcpkg").join("vcpkg.exe");
+    #[cfg(not(windows))]
+    let vcpkg_bin = project.join("vcpkg").join("vcpkg");
+
+    let status = Command::new(&vcpkg_bin)
         .arg("install")
         .arg(format!("--triplet={}", detect_vcpkg_triplet()))
         .current_dir(project)

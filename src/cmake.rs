@@ -547,6 +547,70 @@ endif()",
     lines
 }
 
+fn gen_component_resources_lines(comp: &TritonComponent) -> Vec<String> {
+    let mut lines = vec![];
+    for res in &comp.resources {
+        let res = res.trim();
+        if res.is_empty() { continue; }
+        let dest_name = Path::new(res)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(res);
+        lines.push(format!(
+"add_custom_command(TARGET ${{_comp_name}} POST_BUILD
+    COMMAND ${{CMAKE_COMMAND}} -E copy_directory
+        \"${{CMAKE_CURRENT_SOURCE_DIR}}/{res}\"
+        \"$<TARGET_FILE_DIR:${{_comp_name}}>/{dest_name}\"
+    COMMENT \"Copying '{res}' next to executable\"
+)",
+            res = res, dest_name = dest_name
+        ));
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn gen_component_vendor_libs_lines(comp: &TritonComponent) -> Vec<String> {
+    if comp.vendor_libs.is_empty() { return vec![]; }
+    let libs: Vec<String> = comp.vendor_libs.iter()
+        .map(|p| format!("    \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\"", p))
+        .collect();
+    let mut lines = vec!["target_link_libraries(${_comp_name} PRIVATE".into()];
+    lines.extend(libs);
+    lines.push(")".into());
+    lines
+}
+
+fn gen_component_link_options_lines(comp: &TritonComponent) -> Vec<String> {
+    use crate::models::LinkOptions;
+    match &comp.link_options {
+        LinkOptions::None => vec![],
+        LinkOptions::All(opts) => {
+            if opts.is_empty() { return vec![]; }
+            let joined = opts.iter().map(|o| cmake_quote(o)).collect::<Vec<_>>().join(" ");
+            vec![format!("target_link_options(${{_comp_name}} PRIVATE {})", joined)]
+        }
+        LinkOptions::PerPlatform(map) => {
+            let mut lines = vec![];
+            for (platform, opts) in map {
+                if opts.is_empty() { continue; }
+                let joined = opts.iter().map(|o| cmake_quote(o)).collect::<Vec<_>>().join(" ");
+                let condition_str = match platform.to_ascii_lowercase().as_str() {
+                    "linux"   => "UNIX AND NOT APPLE".to_string(),
+                    "macos"   => "APPLE".to_string(),
+                    "windows" => "WIN32".to_string(),
+                    other     => other.to_string(),
+                };
+                let condition = condition_str.as_str();
+                lines.push(format!("if({condition})"));
+                lines.push(format!("  target_link_options(${{_comp_name}} PRIVATE {})", joined));
+                lines.push("endif()".into());
+            }
+            lines
+        }
+    }
+}
+
 fn gen_component_defines_lines(comp: &TritonComponent) -> Vec<String> {
     if comp.defines.is_empty() {
         return vec![];
@@ -564,60 +628,6 @@ fn gen_component_defines_lines(comp: &TritonComponent) -> Vec<String> {
         "target_compile_definitions(${{_comp_name}} PRIVATE {})",
         parts.join(" ")
     )]
-}
-
-/// Generate CMake lines that copy declared assets next to the produced exe/lib.
-/// For each entry in `component.assets`, we treat it as a path relative to the component dir.
-/// - If it's a directory: copy the whole directory to `$<TARGET_FILE_DIR:...>/<name>`
-/// - If it's a file: copy the file to the target dir, preserving the filename.
-fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> {
-    if comp.assets.is_empty() {
-        return vec![];
-    }
-
-    let mut lines = vec![];
-    lines.push("# --- triton: stage component assets next to target ---".into());
-    for a in &comp.assets {
-        let a = a.trim();
-        if a.is_empty() {
-            continue;
-        }
-        // Use configure-time checks (EXISTS/IS_DIRECTORY). Copy at build time.
-        lines.push(format!("set(_triton_asset_src \"${{CMAKE_CURRENT_SOURCE_DIR}}/{a}\")"));
-        lines.push("if(EXISTS \"${_triton_asset_src}\")".into());
-        lines.push(format!(
-            "  set(_triton_asset_dst_dir \"$<TARGET_FILE_DIR:${{_comp_name}}>\")"
-        ));
-        // Ensure target dir exists
-        lines.push(format!(
-            "  add_custom_command(TARGET ${{_comp_name}} POST_BUILD COMMAND \"${{CMAKE_COMMAND}}\" -E make_directory \"${{_triton_asset_dst_dir}}\")"
-        ));
-        // If directory, copy_directory to a subfolder with the same name
-        lines.push("  if(IS_DIRECTORY \"${_triton_asset_src}\")".into());
-        lines.push(format!(
-            "    get_filename_component(_triton_asset_name \"${{_triton_asset_src}}\" NAME)"
-        ));
-        lines.push(format!(
-            "    add_custom_command(TARGET ${{_comp_name}} POST_BUILD \
-             COMMAND \"${{CMAKE_COMMAND}}\" -E copy_directory \"${{_triton_asset_src}}\" \
-             \"${{_triton_asset_dst_dir}}/${{_triton_asset_name}}\")"
-        ));
-        // Else, single file copy
-        lines.push("  else()".into());
-        lines.push(format!(
-            "    add_custom_command(TARGET ${{_comp_name}} POST_BUILD \
-             COMMAND \"${{CMAKE_COMMAND}}\" -E copy_if_different \"${{_triton_asset_src}}\" \
-             \"${{_triton_asset_dst_dir}}\")"
-        ));
-        lines.push("  endif()".into());
-        lines.push("else()".into());
-        lines.push(format!(
-            "  message(WARNING \"triton: asset path not found for '${{_comp_name}}': ${{_triton_asset_src}}\")"
-        ));
-        lines.push("endif()".into());
-    }
-    lines.push(String::new());
-    lines
 }
 
 pub fn rewrite_component_cmake(
@@ -723,14 +733,31 @@ endif()"#;
 
     dep_lines.extend(gen_component_link_lines(root, comp));
 
-    // --- Assets: copy to $<TARGET_FILE_DIR:...> after build ---
-    let assets_lines = gen_component_assets_lines(comp);
-    if !assets_lines.is_empty() {
-        dep_lines.push(String::new());
-        dep_lines.extend(assets_lines);
+    let vl_lines = gen_component_vendor_libs_lines(comp);
+    if !vl_lines.is_empty() {
+        if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
+        dep_lines.extend(vl_lines);
     }
 
-    // Assemble final
+    let lo_lines = gen_component_link_options_lines(comp);
+    if !lo_lines.is_empty() {
+        if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
+        dep_lines.extend(lo_lines);
+    }
+
+    let res_lines = gen_component_resources_lines(comp);
+    if !res_lines.is_empty() {
+        if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
+        dep_lines.extend(res_lines);
+    }
+
+
     let mut new_body = String::new();
     new_body.push_str(&pre);
     if !pre.ends_with('\n') {

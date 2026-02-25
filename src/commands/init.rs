@@ -107,7 +107,9 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
                     link: vec![],
                     defines: vec![],
                     exports: vec![],
-                    assets: vec![],
+                    resources: vec![],
+                    link_options: Default::default(),
+                    vendor_libs: vec![],
                 });
         }
     }
@@ -154,7 +156,9 @@ int main(int argc, char **argv) {
             link: vec![LinkEntry::Name("GTest".into())],
             defines: vec![],
             exports: vec![],
-            assets: vec![],
+            resources: vec![],
+            link_options: Default::default(),
+            vendor_libs: vec![],
         });
 
     if !root

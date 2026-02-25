@@ -104,13 +104,31 @@ pub struct TritonComponent {
     /// Any component that depends on this one will inherit these usage requirements.
     #[serde(default)]
     pub exports: Vec<String>,
-
-    /// Relative folders or files inside this component directory to be staged
-    /// next to the produced exe/lib (copied to `$<TARGET_FILE_DIR:...>`).
-    /// Example in `components/Game/triton.json`:
-    ///   "assets": ["assets", "shaders", "data/config.json"]
+    /// Resource directories (relative to the component root) to copy next to the
+    /// executable after each build.  e.g. `["resources"]` → copies
+    /// `components/<name>/resources/` → `$<TARGET_FILE_DIR:target>/resources/`.
     #[serde(default)]
-    pub assets: Vec<String>,
+    pub resources: Vec<String>,
+    /// Extra linker flags passed to target_link_options (PRIVATE).
+    /// Supports platform-conditional flags:
+    ///   "link_options": ["-Wl,--export-dynamic"]         -- all platforms
+    ///   "link_options": { "linux": ["-Wl,--export-dynamic"], "macos": [], "windows": [] }
+    #[serde(default)]
+    pub link_options: LinkOptions,
+    /// Pre-built library files (relative to the component root) to link directly.
+    /// e.g. `["vendor/dotnet/libnethost.a"]`
+    #[serde(default)]
+    pub vendor_libs: Vec<String>,
+}
+
+/// Linker options — either a flat list (all platforms) or a map keyed by "linux"/"macos"/"windows".
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(untagged)]
+pub enum LinkOptions {
+    #[default]
+    None,
+    All(Vec<String>),
+    PerPlatform(BTreeMap<String, Vec<String>>),
 }
 
 /// Allow three forms inside `components.<name>.link`:

@@ -37,7 +37,9 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
                     link: vec![],
                     defines: vec![],
                     exports: vec![],
-                    assets: vec![],
+                    resources: vec![],
+                    link_options: Default::default(),
+                    vendor_libs: vec![],
                 },
             );
         }
