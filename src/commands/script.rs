@@ -59,6 +59,17 @@ fn looks_like_path(s: &str) -> bool {
     s.contains('/') || s.contains('\\') || s.ends_with(".exe") || s.ends_with(".cmd") || s.ends_with(".bat") || s.ends_with(".ps1")
 }
 
+/// Split a script string into (program, arguments).
+/// The first whitespace-delimited token is the program; the rest are arguments.
+/// This handles simple commands like `dotnet build path/to/project`.
+fn split_command(script: &str) -> (&str, Vec<&str>) {
+    let trimmed = script.trim();
+    let mut parts = trimmed.split_whitespace();
+    let program = parts.next().unwrap_or(trimmed);
+    let script_args: Vec<&str> = parts.collect();
+    (program, script_args)
+}
+
 #[cfg(windows)]
 fn normalize_windows_path(root_dir: &Path, s: &str) -> String {
     // Handle leading ./ or .\ and normalize to absolute path
@@ -264,20 +275,11 @@ pub fn handle_script(tokens: &[String]) -> Result<()> {
             return Ok(());
         }
 
-        let mut use_cmd_shell = is_shelly(script);
-        let mut prog = script.to_string();
-
-        // If it looks like a path, normalize it; .cmd/.bat must go through cmd.exe
-        if looks_like_path(&prog) {
-            prog = normalize_windows_path(&cwd, &prog);
-            if prog.ends_with(".cmd") || prog.ends_with(".bat") {
-                use_cmd_shell = true;
-            }
-        }
+        let use_cmd_shell = is_shelly(script);
 
         if use_cmd_shell {
-            // Build: "<prog> <args...>" for cmd /C
-            let mut merged = prog.clone();
+            // Build: "<script> <args...>" for cmd /C
+            let mut merged = script.to_string();
             for a in args {
                 merged.push(' ');
                 merged.push_str(&shell_escape(a));
@@ -299,11 +301,62 @@ pub fn handle_script(tokens: &[String]) -> Result<()> {
             }
             return Ok(());
         } else {
-            let status = Command::new(&prog)
+            // Split the script into program + its own arguments.
+            // e.g. "dotnet build path/to/project" → program="dotnet", script_args=["build", "path/to/project"]
+            let (program, script_args) = split_command(script);
+
+            // If the program looks like a path, normalize it; .cmd/.bat go through cmd.exe
+            if looks_like_path(program) {
+                let normalized = normalize_windows_path(&cwd, program);
+                if normalized.ends_with(".cmd") || normalized.ends_with(".bat") {
+                    // .cmd/.bat must go through cmd.exe
+                    let mut merged = normalized;
+                    for a in &script_args {
+                        merged.push(' ');
+                        merged.push_str(&shell_escape(a));
+                    }
+                    for a in args {
+                        merged.push(' ');
+                        merged.push_str(&shell_escape(a));
+                    }
+                    let status = Command::new("cmd")
+                        .arg("/C")
+                        .arg(&merged)
+                        .current_dir(&cwd)
+                        .status()
+                        .with_context(|| format!("Failed to launch cmd.exe for script {}", script_name))?;
+                    if !status.success() {
+                        bail!(
+                            "Script \"{}\" exited with exit code: {}",
+                            script_name,
+                            status.code().unwrap_or(-1)
+                        );
+                    }
+                    return Ok(());
+                }
+
+                let status = Command::new(&normalized)
+                    .args(&script_args)
+                    .args(args)
+                    .current_dir(&cwd)
+                    .status()
+                    .with_context(|| format!("Failed to spawn {}", normalized))?;
+                if !status.success() {
+                    bail!(
+                        "Script \"{}\" exited with exit code: {}",
+                        script_name,
+                        status.code().unwrap_or(-1)
+                    );
+                }
+                return Ok(());
+            }
+
+            let status = Command::new(program)
+                .args(&script_args)
                 .args(args)
                 .current_dir(&cwd)
                 .status()
-                .with_context(|| format!("Failed to spawn {}", prog))?;
+                .with_context(|| format!("Failed to spawn {}", program))?;
             if !status.success() {
                 bail!(
                     "Script \"{}\" exited with exit code: {}",
@@ -357,15 +410,20 @@ pub fn handle_script(tokens: &[String]) -> Result<()> {
             return Ok(());
         }
 
+        // Split the script into program + its own arguments.
+        // e.g. "dotnet build path/to/project" → program="dotnet", script_args=["build", "path/to/project"]
+        let (program, script_args) = split_command(script);
+
         // Path-like: resolve ./ and run directly, else fall back to PATH
-        let prog = if let Some(rest) = script.strip_prefix("./") {
+        let prog = if let Some(rest) = program.strip_prefix("./") {
             cwd.join(rest)
         } else {
-            cwd.join(script)
+            cwd.join(program)
         };
 
         if prog.exists() {
             let status = Command::new(&prog)
+                .args(&script_args)
                 .args(args)
                 .current_dir(&cwd)
                 .status()
@@ -379,11 +437,12 @@ pub fn handle_script(tokens: &[String]) -> Result<()> {
             }
             return Ok(());
         } else {
-            let status = Command::new(script)
+            let status = Command::new(program)
+                .args(&script_args)
                 .args(args)
                 .current_dir(&cwd)
                 .status()
-                .with_context(|| format!("Failed to spawn {}", script))?;
+                .with_context(|| format!("Failed to spawn {}", program))?;
             if !status.success() {
                 bail!(
                     "Script \"{}\" exited with exit code: {}",

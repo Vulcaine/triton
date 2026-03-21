@@ -478,18 +478,19 @@ fn gen_vcpkg_dep_lines(root: &TritonRoot, comp: &TritonComponent, comp_name: &st
 
     for spec in specs {
         if let Some(pkg) = spec.pkg_hint.clone() {
-            lines.push(format!("find_package({} CONFIG REQUIRED)", pkg));
             if spec.targets.is_empty() {
+                // Let the strict finder handle find_package + target detection
                 lines.push(format!(
-                    "# vcpkg: {} (no explicit targets; using strict finder)",
-                    spec.name
+                    "# vcpkg: {} (package: {}; using strict finder)",
+                    spec.name, pkg
                 ));
                 lines.push(format!(
                     "triton_find_vcpkg_and_link_strict(${{_comp_name}} \"{}\")",
-                    spec.name
+                    pkg
                 ));
                 lines.push(String::new());
             } else {
+                lines.push(format!("find_package({} CONFIG REQUIRED)", pkg));
                 let vis = if spec.public { "PUBLIC" } else { "PRIVATE" };
                 for t in spec.targets {
                     lines.push(format!(
@@ -571,14 +572,63 @@ fn gen_component_resources_lines(comp: &TritonComponent) -> Vec<String> {
 }
 
 fn gen_component_vendor_libs_lines(comp: &TritonComponent) -> Vec<String> {
-    if comp.vendor_libs.is_empty() { return vec![]; }
-    let libs: Vec<String> = comp.vendor_libs.iter()
-        .map(|p| format!("    \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\"", p))
-        .collect();
-    let mut lines = vec!["target_link_libraries(${_comp_name} PRIVATE".into()];
-    lines.extend(libs);
-    lines.push(")".into());
-    lines
+    use crate::models::VendorLibs;
+    match &comp.vendor_libs {
+        VendorLibs::None => vec![],
+        VendorLibs::All(libs) => {
+            if libs.is_empty() { return vec![]; }
+            let paths: Vec<String> = libs.iter()
+                .map(|p| format!("    \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\"", p))
+                .collect();
+            let mut lines = vec!["target_link_libraries(${_comp_name} PRIVATE".into()];
+            lines.extend(paths);
+            lines.push(")".into());
+            lines
+        }
+        VendorLibs::PerPlatform(map) => {
+            let mut lines = vec![];
+            for (platform, libs) in map {
+                if libs.is_empty() { continue; }
+                let condition_str = match platform.to_ascii_lowercase().as_str() {
+                    "linux"   => "UNIX AND NOT APPLE".to_string(),
+                    "macos"   => "APPLE".to_string(),
+                    "windows" => "WIN32".to_string(),
+                    other     => other.to_string(),
+                };
+                let paths: Vec<String> = libs.iter()
+                    .map(|p| format!("    \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\"", p))
+                    .collect();
+                lines.push(format!("if({})", condition_str));
+                lines.push("  target_link_libraries(${_comp_name} PRIVATE".into());
+                for path in &paths {
+                    lines.push(format!("  {}", path));
+                }
+                lines.push("  )".into());
+
+                // On Windows, .lib files are import libraries — copy sibling .dll
+                // files next to the executable so they're found at runtime.
+                if platform.to_ascii_lowercase() == "windows" {
+                    for lib_path in libs {
+                        if lib_path.ends_with(".lib") {
+                            let dll_path = format!("{}dll", &lib_path[..lib_path.len() - 3]);
+                            lines.push(format!(
+                                "  if(EXISTS \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\")",
+                                dll_path
+                            ));
+                            lines.push(format!(
+                                "    add_custom_command(TARGET ${{_comp_name}} POST_BUILD COMMAND ${{CMAKE_COMMAND}} -E copy_if_different \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\" \"$<TARGET_FILE_DIR:${{_comp_name}}>\")",
+                                dll_path
+                            ));
+                            lines.push("  endif()".into());
+                        }
+                    }
+                }
+
+                lines.push("endif()".into());
+            }
+            lines
+        }
+    }
 }
 
 fn gen_component_link_options_lines(comp: &TritonComponent) -> Vec<String> {
@@ -840,6 +890,13 @@ endif()"#;
         dep_lines.extend(res_lines);
     }
 
+    let asset_lines = gen_component_assets_lines(comp);
+    if !asset_lines.is_empty() {
+        if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
+        dep_lines.extend(asset_lines);
+    }
 
     let mut new_body = String::new();
     new_body.push_str(&pre);

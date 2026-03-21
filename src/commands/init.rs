@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use crate::cmake::effective_cmake_version;
+use crate::cmake::{detect_vcpkg_triplet, effective_cmake_version};
 use crate::models::{DepSpec, LinkEntry, TritonComponent, TritonRoot};
 use crate::templates::{cmake_presets, component_cmakelists, components_dir_cmakelists};
 use crate::tools::ensure_ninja_dir;
@@ -12,8 +12,8 @@ use crate::util; // for read_json
 
 pub fn handle_init(
     name_opt: Option<&str>,
-    triplet: &str,
     generator: &str,
+    cxx_std: &str,
 ) -> Result<()> {
     let cwd = env::current_dir().context("cannot get current directory")?;
 
@@ -53,12 +53,13 @@ pub fn handle_init(
     // Parse our minimum CMake version once and pass to templates
     let cmake_ver = effective_cmake_version();
 
-    // Preserve user-passed triplet and generator
+    // Preserve user-passed generator; detect triplet from environment
+    let triplet = detect_vcpkg_triplet();
     _changes.push((
         "components/CMakePresets.json".into(),
         write_text_if_changed(
             "components/CMakePresets.json",
-            &cmake_presets(&app_name, generator, triplet, cmake_ver),
+            &cmake_presets(&app_name, generator, &triplet, cmake_ver),
         )?,
     ));
 
@@ -69,6 +70,7 @@ pub fn handle_init(
         let mut r = TritonRoot::default();
         r.app_name = app_name.clone();
         r.generator = generator.to_string();
+        r.cxx_std = cxx_std.to_string();
         r
     };
 
@@ -78,6 +80,10 @@ pub fn handle_init(
 
     if root.generator.is_empty() {
         root.generator = generator.to_string();
+    }
+
+    if root.cxx_std.is_empty() {
+        root.cxx_std = cxx_std.to_string();
     }
 
     // app scaffold
@@ -109,9 +115,42 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
                     exports: vec![],
                     resources: vec![],
                     link_options: Default::default(),
-                    vendor_libs: vec![],
+                    vendor_libs: Default::default(),
                     assets: vec![],
                 });
+        }
+    }
+
+    // Discover existing component directories (any subdir of components/ with a CMakeLists.txt)
+    let components_path = Path::new("components");
+    if components_path.is_dir() {
+        if let Ok(entries) = fs::read_dir(components_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() { continue; }
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                // Skip tests — handled separately below
+                if name == "tests" { continue; }
+                // Only register if it has a CMakeLists.txt
+                if !path.join("CMakeLists.txt").exists() { continue; }
+                // Detect kind: exe if main.cpp exists, else lib
+                let kind = if path.join("src/main.cpp").exists() { "exe" } else { "lib" };
+                root.components
+                    .entry(name)
+                    .or_insert_with(|| TritonComponent {
+                        kind: kind.into(),
+                        link: vec![],
+                        defines: vec![],
+                        exports: vec![],
+                        resources: vec![],
+                        link_options: Default::default(),
+                        vendor_libs: Default::default(),
+                        assets: vec![],
+                    });
+            }
         }
     }
 
@@ -159,7 +198,7 @@ int main(int argc, char **argv) {
             exports: vec![],
             resources: vec![],
             link_options: Default::default(),
-            vendor_libs: vec![],
+            vendor_libs: Default::default(),
             assets: vec![],
         });
 
@@ -183,7 +222,7 @@ int main(int argc, char **argv) {
         serde_json::from_str::<serde_json::Value>(&s).unwrap_or_else(|_| serde_json::json!({}))
     } else {
         serde_json::json!({
-            "name": app_name,
+            "name": app_name.to_lowercase().replace('_', "-"),
             "version": "0.0.0",
             "dependencies": []
         })

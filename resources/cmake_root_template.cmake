@@ -63,6 +63,9 @@ function(_triton_json_array_to_list OUT JSON_ARRAY)
     return()
   endif()
   string(JSON _n LENGTH "${JSON_ARRAY}")
+  if(_n EQUAL 0)
+    return()
+  endif()
   math(EXPR _last "${_n}-1")
   set(_res "")
   foreach(i RANGE ${_last})
@@ -151,6 +154,58 @@ if(NOT COMMAND triton_find_vcpkg_and_link_strict)
     endif()
   endfunction()
 
+  # Try to pick the best target from a list of candidates for a given package name.
+  # Heuristic: prefer Pkg::Pkg or Pkg::pkg, then filter out common auxiliaries
+  # (*main, *-static, *-shared), then fall back to the first remaining target.
+  function(_triton_pick_best_target OUT PKG CANDIDATES)
+    set(${OUT} "" PARENT_SCOPE)
+
+    # Normalise: lowercase the hint for matching
+    string(TOLOWER "${PKG}" _hint_lower)
+
+    # Pass 1: exact Pkg::Pkg match (case-insensitive)
+    foreach(t IN LISTS CANDIDATES)
+      string(TOLOWER "${t}" _tl)
+      if(_tl MATCHES "^[^:]+::${_hint_lower}$")
+        set(${OUT} "${t}" PARENT_SCOPE)
+        return()
+      endif()
+    endforeach()
+
+    # Pass 2: filter out common auxiliary targets (*main, *-static, *-shared)
+    set(_filtered "")
+    foreach(t IN LISTS CANDIDATES)
+      string(TOLOWER "${t}" _tl)
+      if(NOT _tl MATCHES "(main|static|shared)$")
+        list(APPEND _filtered "${t}")
+      endif()
+    endforeach()
+    list(LENGTH _filtered _fn)
+    if(_fn EQUAL 1)
+      list(GET _filtered 0 _t)
+      set(${OUT} "${_t}" PARENT_SCOPE)
+      return()
+    endif()
+
+    # Pass 3: among filtered, prefer one containing the hint name
+    foreach(t IN LISTS _filtered)
+      string(TOLOWER "${t}" _tl)
+      if(_tl MATCHES "${_hint_lower}")
+        set(${OUT} "${t}" PARENT_SCOPE)
+        return()
+      endif()
+    endforeach()
+
+    # Pass 4: just pick the first filtered candidate (or first overall)
+    if(_fn GREATER 0)
+      list(GET _filtered 0 _t)
+      set(${OUT} "${_t}" PARENT_SCOPE)
+    else()
+      list(GET CANDIDATES 0 _t)
+      set(${OUT} "${_t}" PARENT_SCOPE)
+    endif()
+  endfunction()
+
   function(triton_find_vcpkg_and_link_strict tgt pkg)
     _triton_dir_targets(_before_bs _before_imp)
 
@@ -166,6 +221,11 @@ if(NOT COMMAND triton_find_vcpkg_and_link_strict)
       target_link_libraries(${tgt} PRIVATE ${_t})
       return()
     elseif(_n GREATER 1)
+      _triton_pick_best_target(_best "${pkg}" "${_new}")
+      if(_best)
+        target_link_libraries(${tgt} PRIVATE ${_best})
+        return()
+      endif()
       message(FATAL_ERROR [[
 triton: multiple targets introduced by package '${pkg}':
   ${_new}
@@ -179,6 +239,30 @@ Please specify an explicit mapping in triton.json:
     _triton_make_iface_from_module_vars(_synth "${pkg}" "${_PFX}")
     if(_synth)
       target_link_libraries(${tgt} PRIVATE ${_synth})
+      return()
+    endif()
+
+    # Fallback: try pkg-config
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+      # Try common pkg-config names: pkg, pkg2, libpkg
+      foreach(_pc_name ${pkg} ${pkg}2 lib${pkg})
+        pkg_check_modules(_pc_${_pfx} QUIET IMPORTED_TARGET ${_pc_name})
+        if(_pc_${_pfx}_FOUND)
+          target_link_libraries(${tgt} PRIVATE PkgConfig::_pc_${_pfx})
+          return()
+        endif()
+      endforeach()
+    endif()
+
+    # Fallback: try find_library directly
+    find_library(_fl_${_pfx} NAMES ${pkg} ${pkg}2 lib${pkg})
+    if(_fl_${_pfx})
+      target_link_libraries(${tgt} PRIVATE ${_fl_${_pfx}})
+      find_path(_fh_${_pfx} NAMES ${pkg}.h ${pkg}/lzo1x.h)
+      if(_fh_${_pfx})
+        target_include_directories(${tgt} PRIVATE ${_fh_${_pfx}})
+      endif()
       return()
     endif()
 

@@ -110,6 +110,17 @@ fn find_executable(project: &Path, cfg: &str, component: Option<&str>) -> Result
 }
 
 pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[String]) -> Result<()> {
+    // If `path` matches a script name in triton.json, delegate to the script runner.
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(root) = read_json::<_, TritonRoot>(cwd.join("triton.json")) {
+            if root.scripts.contains_key(path) {
+                let mut tokens = vec![path.to_string()];
+                tokens.extend_from_slice(args);
+                return super::script::handle_script(&tokens);
+            }
+        }
+    }
+
     let project = PathBuf::from(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
     let cfg = normalize_config(config);
 

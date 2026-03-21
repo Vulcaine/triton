@@ -116,9 +116,11 @@ pub struct TritonComponent {
     #[serde(default)]
     pub link_options: LinkOptions,
     /// Pre-built library files (relative to the component root) to link directly.
-    /// e.g. `["vendor/dotnet/libnethost.a"]`
+    /// Supports both flat list (all platforms) and per-platform map:
+    ///   `["vendor/dotnet/libnethost.a"]`                     -- all platforms
+    ///   `{ "linux": ["vendor/dotnet/libnethost.a"], "windows": ["vendor/dotnet/nethost.lib"] }`
     #[serde(default)]
-    pub vendor_libs: Vec<String>,
+    pub vendor_libs: VendorLibs,
     /// Asset paths (relative to the component root) to stage next to the target
     /// incrementally.  Directories are mirrored; files are copied if changed.
     #[serde(default)]
@@ -129,6 +131,16 @@ pub struct TritonComponent {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(untagged)]
 pub enum LinkOptions {
+    #[default]
+    None,
+    All(Vec<String>),
+    PerPlatform(BTreeMap<String, Vec<String>>),
+}
+
+/// Vendor library paths — either a flat list (all platforms) or a map keyed by "linux"/"macos"/"windows".
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(untagged)]
+pub enum VendorLibs {
     #[default]
     None,
     All(Vec<String>),

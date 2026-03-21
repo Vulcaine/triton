@@ -33,31 +33,35 @@ pub fn handle_generate() -> Result<()> {
 
     // --- regenerate vcpkg.json ---
     let host_os = std::env::consts::OS;
-    let mut deps: Vec<String> = Vec::new();
+    let mut deps: Vec<serde_json::Value> = Vec::new();
 
     for dep in &root.deps {
         match dep {
             DepSpec::Simple(s) => {
                 if dep_is_active(dep, s, host_os, &trip) {
-                    deps.push(s.clone());
+                    deps.push(json!(s));
                 }
             }
             DepSpec::Git(_) => {}
             DepSpec::Detailed(d) => {
                 if dep_is_active(dep, &d.name, host_os, &trip) {
-                    let mut spec = d.name.clone();
                     if !d.features.is_empty() {
-                        spec.push(':');
-                        spec.push_str(&d.features.join(","));
+                        // vcpkg manifest mode requires object format for features
+                        deps.push(json!({
+                            "name": d.name,
+                            "features": d.features,
+                        }));
+                    } else {
+                        deps.push(json!(d.name));
                     }
-                    deps.push(spec);
                 }
             }
         }
     }
 
+    let vcpkg_name = root.app_name.to_lowercase().replace('_', "-");
     let vcpkg_manifest = json!({
-        "name": root.app_name,
+        "name": vcpkg_name,
         "version": "0.1.0",
         "dependencies": deps,
     });

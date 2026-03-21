@@ -159,6 +159,8 @@ fn write_batch_and_run(
     let mut bat = String::new();
     bat.push_str("@echo off\r\n");
     bat.push_str("setlocal\r\n");
+    // Ensure Windows system dirs are in PATH (git-bash may strip them)
+    bat.push_str("set PATH=%SystemRoot%\\System32;%SystemRoot%;%SystemRoot%\\System32\\Wbem;%SystemRoot%\\System32\\WindowsPowerShell\\v1.0;%PATH%\r\n");
     bat.push_str(&format!("call \"{}\" -arch=x64\r\n", vs));
     if let Some(p) = prepend_path {
         let pp = win_norm(p);
@@ -311,7 +313,7 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
             if let Some(dir) = &ninja_abs_dir {
                 prepend = Some(dir.clone());
                 let ninja_bin = dir.join("ninja.exe");
-                configure_line.push_str(&format!(" -DCMAKE_MAKE_PROGRAM=\"{}\"", ninja_bin.display()));
+                configure_line.push_str(&format!(" -DCMAKE_MAKE_PROGRAM=\"{}\"", win_norm(&ninja_bin)));
             }
 
             let vs = vsdevcmd_path().ok_or_else(|| {
