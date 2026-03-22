@@ -827,6 +827,24 @@ endif()"#;
         base_fixed = base.replace(duplicated, canonical);
     }
 
+    // --- Fix TARGET_RUNTIME_DLLS copy (no-op when empty) ---
+    let old_dll_copy = r#"  add_custom_command(TARGET ${_comp_name} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_RUNTIME_DLLS:${_comp_name}>
+      $<TARGET_FILE_DIR:${_comp_name}>
+    COMMAND_EXPAND_LISTS
+  )"#;
+    let new_dll_copy = r#"  add_custom_command(TARGET ${_comp_name} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E
+      $<IF:$<BOOL:$<TARGET_RUNTIME_DLLS:${_comp_name}>>,copy_if_different,true>
+      $<TARGET_RUNTIME_DLLS:${_comp_name}>
+      $<$<BOOL:$<TARGET_RUNTIME_DLLS:${_comp_name}>>:$<TARGET_FILE_DIR:${_comp_name}>>
+    COMMAND_EXPAND_LISTS
+  )"#;
+    if base_fixed.contains(old_dll_copy) {
+        base_fixed = base_fixed.replace(old_dll_copy, new_dll_copy);
+    }
+
     // --- Replace triton deps block ---
     let begin = "# ## triton:deps begin";
     let end = "# ## triton:deps end";

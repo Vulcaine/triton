@@ -30,9 +30,10 @@ set_property(TARGET ${_comp_name} PROPERTY CXX_STANDARD 20)
 # On Windows, copy runtime DLLs beside the executable after build (MSVC, vcpkg, etc.)
 if(WIN32 AND _is_exe)
   add_custom_command(TARGET ${_comp_name} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    COMMAND ${CMAKE_COMMAND} -E
+      $<IF:$<BOOL:$<TARGET_RUNTIME_DLLS:${_comp_name}>>,copy_if_different,true>
       $<TARGET_RUNTIME_DLLS:${_comp_name}>
-      $<TARGET_FILE_DIR:${_comp_name}>
+      $<$<BOOL:$<TARGET_RUNTIME_DLLS:${_comp_name}>>:$<TARGET_FILE_DIR:${_comp_name}>>
     COMMAND_EXPAND_LISTS
   )
 

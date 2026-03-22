@@ -359,6 +359,17 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
         }
     }
 
+    // --- Pre-build scripts ---
+    if root.scripts.contains_key("pre_build") {
+        eprintln!("Running pre_build script...");
+        let _prev = env::current_dir();
+        env::set_current_dir(&project)?;
+        crate::commands::handle_script(&["pre_build".to_string()])?;
+        if let Ok(prev) = _prev {
+            env::set_current_dir(prev)?;
+        }
+    }
+
     // --- Build ---
     #[cfg(windows)]
     let using_ninja_on_windows = effective_gen.eq_ignore_ascii_case("ninja");
