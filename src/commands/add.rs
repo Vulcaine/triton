@@ -77,15 +77,30 @@ fn parse_pkg_and_component<'a>(pkg: &'a str, component_opt: Option<&'a str>) -> 
         return (p, None);
     }
     // Don't split on ':' if it looks like a URL scheme (https:, git:, ssh:, http:)
-    if !pkg.starts_with("https:") && !pkg.starts_with("http:")
-        && !pkg.starts_with("git:") && !pkg.starts_with("ssh:")
+    if pkg.starts_with("https:") || pkg.starts_with("http:")
+        || pkg.starts_with("git:") || pkg.starts_with("ssh:")
+        || pkg.starts_with("git@")
     {
-        if let Some((p, c)) = pkg.split_once(':') {
-            let p = p.trim();
-            let c = c.trim();
-            if !c.is_empty() { return (p, Some(c)); }
-            return (p, None);
+        // For full URLs, component comes after @branch:Component
+        // e.g. "https://github.com/org/repo.git@docking:UI"
+        if let Some(at_idx) = pkg.find('@') {
+            let after_at = &pkg[at_idx + 1..];
+            if let Some(colon_idx) = after_at.find(':') {
+                let url_with_branch = &pkg[..at_idx + 1 + colon_idx];
+                let comp = after_at[colon_idx + 1..].trim();
+                if !comp.is_empty() {
+                    return (url_with_branch, Some(comp));
+                }
+            }
         }
+        return (pkg, component_opt.map(|s| s.trim()).filter(|s| !s.is_empty()));
+    }
+
+    if let Some((p, c)) = pkg.split_once(':') {
+        let p = p.trim();
+        let c = c.trim();
+        if !c.is_empty() { return (p, Some(c)); }
+        return (p, None);
     }
     (pkg, component_opt.map(|s| s.trim()).filter(|s| !s.is_empty()))
 }

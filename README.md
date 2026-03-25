@@ -1,254 +1,414 @@
-# 🔱 Triton
+# Triton
 
-> **Status:** _alpha_ • **OS:** Windows **(tested)** · Linux/macOS **(experimental)**, PRs welcome
+> **Status:** beta (0.9.0) | **OS:** Windows (tested), Linux/macOS (experimental)
 
-Tired of chanting mysterious CMake incantations, tiptoeing around vcpkg quirks, and untangling a plate of build-file spaghetti?
-**Triton** is a tiny, no-nonsense C++ project manager that snaps CMake and vcpkg together like LEGO®, auto-wires your dependencies, and keeps your codebase ship-shape.. so you can spend your energy shipping features instead of waging war on your build system.
+A C++ project manager that wires CMake and vcpkg together. Define dependencies in `triton.json`, and Triton handles `find_package`, `target_link_libraries`, vcpkg manifests, and git vendoring — so you don't have to.
 
-> At least, that’s the dream **Triton** is trying to live up to. It’s still alpha — so it might occasionally trip over its own trident.
+## Requirements
 
-If **Triton** itself feels tricky, hey — nothing’s stopping you from making your own wrapper around Triton… which would make it the fourth wrapper around C++ package managers. And who knows.. maybe someone will wrap your wrapper. Together we can summon Wrapzilla.
-
-**Or…** you can help Triton ascend and become the most powerful of them all. PRs, issues, and wild suggestions are always welcome aboard.
-
-## ✨ Highlights
-
-- ✅ Define all dependencies once in `triton.json`
-- 🔗 Link components via `"link": ["depName", …]`
-- ⚙️ Generates the right `find_package` / `add_subdirectory` / `target_link_libraries` into **managed regions**
-- 📦 vcpkg runs in **manifest mode**
-- 🌱 Git deps vendored into `third_party/<name>` via `add_subdirectory(...)`
-- 🪟 Windows + Ninja: uses `VsDevCmd.bat` to prime the MSVC environment
-
-## ⚙️ Requirements
-
-- **Windows 10/11** (tested). Linux & macOS are experimental.
-- **Rust** (stable)
-- **CMake** (≥ 3.25 recommended)
+- **Rust** (stable) — to build Triton
+- **CMake** (>= 3.25 recommended)
 - **Ninja** (recommended) or MSBuild
 - **Git**
-- **vcpkg** (manifest mode; Triton manages `vcpkg.json`)
-- **Visual Studio 2022 Build Tools** (cl.exe, link.exe) on Windows
+- **vcpkg** (Triton manages `vcpkg.json` in manifest mode)
+- **Visual Studio 2022 Build Tools** (Windows only)
 
-## 🚀 Install
+> Triton can auto-install **Ninja**, **vcpkg**, and **CMake** if they're missing.
 
-[🪟 Download Triton (Windows)](https://github.com/Vulcaine/triton/releases/latest/download/triton.exe)
+## Install
 
-**OR**
+Download the latest binary:
 
-With Rust installed:
+[Download triton.exe (Windows)](https://github.com/Vulcaine/triton/releases/latest/download/triton.exe)
+
+Or build from source:
 
 ```bash
-cargo install --path .   # run from the Triton source repo
+cargo install --path .
 ```
 
-## Make sure Cargo’s bin dir is on your `PATH`:
-
-### Git Bash
+Make sure `~/.cargo/bin` is on your PATH:
 
 ```bash
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
+# Git Bash
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
-### PowerShell
-
-```bash
+# PowerShell
 $env:Path += ";$env:USERPROFILE\.cargo\bin"
 [Environment]::SetEnvironmentVariable("Path", $env:Path, "User")
 ```
 
-# Quick Start
+## Quick Start
 
 ```bash
-triton init --name demo
-cd demo
-triton add sdl2 glm               # add deps (no linking)
-triton add sdl2:demo              # add+link to component 'demo'
-triton build . --config debug     # default is debug
-triton run .
+triton init --name myapp          # scaffold a new project
+cd myapp
+triton add sdl2 glm               # add vcpkg deps
+triton add sdl2:myapp glm:myapp   # add + link to component 'myapp'
+triton build .                    # configure + build (debug by default)
+triton run .                      # run the default executable
 ```
 
-## Initialize an existing repo
+## Commands
 
-If you want to use triton in an existing project, that requires a bit of work.
-Triton enforces a project architecture as a convention, so you must move everything under `components`.
-Your earlier CMakeLists.txt will no longer be needed, triton will automatically generate them.
+| Command | What it does |
+|---------|-------------|
+| `triton init --name <dir>` | Create a new project in `<dir>` |
+| `triton init .` | Minimal init in current directory |
+| `triton add <deps...>` | Add dependencies, optionally link to components |
+| `triton remove <dep>` | Remove a dependency entirely |
+| `triton link <A>:<B>` | Link dep or component A to component B |
+| `triton generate` | Regenerate CMake files from `triton.json` |
+| `triton build <path>` | Configure + build |
+| `triton run <path>` | Run a built component |
+| `triton test <path>` | Run tests via CTest |
+| `triton find-target <dep>` | Search for a dep's CMake package name |
+| `triton cmake install` | Install or upgrade CMake |
+| `triton <script>` | Run a custom script defined in `triton.json` |
+
+### `init`
 
 ```bash
-cd existing-repo
-triton init .                     # minimal: writes triton.json and components/CMakeLists.txt
-# Put your components under ./components/<name>
-# Add them to triton.json -> components -> "<name>": { "kind": "...", "link": [...] }
-triton generate                   # write/refresh managed CMake blocks
+triton init --name demo                    # new project in demo/
+triton init --name demo --generator Ninja  # specify CMake generator
+triton init --name demo --cxx_std 23       # specify C++ standard
+triton init .                              # init in current dir (no scaffold)
 ```
 
-## Triton Json
+### `add`
+
+```bash
+triton add lua sol2                  # add deps (no linking)
+triton add lua:Game sol2:Game        # add + link to component 'Game'
+triton add org/repo                  # add git dependency
+triton add org/repo@v1.0             # git dep with branch/tag
+triton add org/repo@v1.0:Renderer    # git dep + link to component
+```
+
+- **vcpkg deps** are transactional — if `vcpkg install` fails, `vcpkg.json` is reverted and the dep is not recorded.
+- **Git deps** are recorded only if the clone (and optional checkout) succeeds.
+- Linking to a non-existent component auto-scaffolds it as a `lib`.
+- **Auto-detection**: After install, Triton scans `vcpkg/installed/<triplet>/share/` to discover the correct CMake package name. If the package name differs from the dep name (e.g., `openal-soft` installs as `OpenAL`), Triton automatically sets the `package` field.
+
+### `remove`
+
+```bash
+triton remove lua                       # remove entirely from project
+triton remove lua --component Game      # unlink from specific component only
+```
+
+### `link`
+
+```bash
+triton link sdl2:Game          # link dep to component
+triton link Core:Game          # link component to component
+```
+
+Creates missing components as `lib` by default.
+
+### `build`
+
+```bash
+triton build .                    # debug (default)
+triton build . --config release   # release
+triton build . --clean            # clean build dir (prompts first)
+triton build . --cleanf           # force clean (no prompt)
+```
+
+If a `pre_build` script is defined in `triton.json`, it runs automatically before each build.
+
+### `run`
+
+```bash
+triton run .                          # run default component
+triton run . --component myapp        # run specific component
+triton run . --config release         # run release build
+triton run . -- --arg1 --arg2         # pass args to the executable
+```
+
+### `test`
+
+```bash
+triton test .                     # run tests (debug)
+triton test . --config release    # run tests (release)
+```
+
+Environment variables for test filtering:
+
+| Variable | Purpose |
+|----------|---------|
+| `TRITON_CTEST_LABEL` | Filter by label (default: `triton`) |
+| `TRITON_CTEST_FILTER` | Regex filter for test names |
+| `TRITON_CTEST_EXCLUDE` | Regex exclude pattern |
+| `TRITON_CTEST_JOBS` | Parallel job count |
+
+### `find-target`
+
+Debug command to discover what CMake package name vcpkg uses for a dependency.
+
+```bash
+triton find-target openal-soft    # → Found: OpenAL
+triton find-target sdl2           # → Found multiple: SDL2, SDL2_mixer, SDL2_image, ...
+triton find-target directxtex     # → Found: DirectXTex
+```
+
+Scans `vcpkg/installed/<triplet>/share/` for Config.cmake files and matches them against the dep name using case-insensitive and hyphen/underscore normalization. When a match is found, it shows the suggested `triton.json` entry.
+
+---
+
+## Validation
+
+Triton validates your `triton.json` before generating CMake or building. You'll get clear errors for:
+
+| Error | Example |
+|-------|---------|
+| Invalid component kind | `"kind": "shared_lib"` — must be `"exe"` or `"lib"` |
+| Self-linking | Component `Core` links to itself |
+| Circular dependencies | `A -> B -> A` cycle detected |
+| Unknown link targets | Component links to `ghost_dep` which isn't in deps or components |
+| Empty app_name | `"app_name": ""` |
+| Missing vcpkg features | Requested feature `dx12` not installed by vcpkg |
+
+---
+
+## `triton.json` Reference
+
+This is the single source of truth for your project.
+
+### Minimal example
 
 ```json
 {
-  "app_name": "demo",
-  "triplet": "x64-windows",
+  "app_name": "myapp",
   "generator": "Ninja",
   "cxx_std": "20",
-  "deps": [
-    "sdl2",
-    "glm",
-    { "repo": "google/filament", "name": "filament", "branch": null, "cmake": [] }
-  ],
+  "deps": ["sdl2", "glm"],
   "components": {
-    "demo": {
+    "myapp": {
       "kind": "exe",
-      "link": [
-        "sdl2",
-        "glm",
-        { "name": "filament", "targets": ["filament"] }
-      ]
-    },
-    "core": {
-      "kind": "lib",
-      "link": ["glm"]
+      "link": ["sdl2", "glm"]
     }
   }
 }
 ```
 
-If you need multiple filament targets, use:
+### Full example
+
 ```json
-{ "name": "filament", "targets": ["filament", "utils", "math"] }
+{
+  "app_name": "myapp",
+  "generator": "Ninja",
+  "cxx_std": "20",
+  "deps": [
+    "sdl2",
+    "glm",
+    {
+      "repo": "google/filament",
+      "name": "filament",
+      "branch": "v1.63",
+      "cmake": ["FILAMENT_ENABLE_JAVA=OFF"]
+    },
+    {
+      "name": "protobuf",
+      "os": ["windows", "linux"],
+      "features": ["lite"],
+      "package": "Protobuf"
+    }
+  ],
+  "components": {
+    "myapp": {
+      "kind": "exe",
+      "link": [
+        "sdl2",
+        "glm",
+        "core",
+        { "name": "filament", "targets": ["filament", "utils"] },
+        { "name": "rmlui", "package": "RmlUi", "targets": ["RmlUi::RmlUi"] }
+      ],
+      "defines": ["APP_VERSION=1"],
+      "exports": ["glm"],
+      "resources": ["resources"],
+      "assets": ["data", "config.json"],
+      "link_options": ["-Wl,--export-dynamic"],
+      "vendor_libs": ["vendor/libfoo.a"]
+    },
+    "core": {
+      "kind": "lib",
+      "link": ["glm"],
+      "defines": ["CORE_LIB"],
+      "exports": ["glm"]
+    }
+  },
+  "scripts": {
+    "dev": "triton build . --config debug && triton run . --config debug",
+    "fmt": "clang-format -i components/**/src/**/*.{h,hpp,c,cpp}",
+    "pre_build": "bash scripts/generate-version.sh"
+  }
+}
 ```
 
 ### Top-level fields
 
-| Field        | Type   | Example         | Notes                                         |
-|--------------|--------|-----------------|-----------------------------------------------|
-| `app_name`   | string | `"demo"`        | Default executable / main component name      |
-| `triplet`    | string | `"x64-windows"` | vcpkg triplet                                 |
-| `generator`  | string | `"Ninja"`       | CMake generator                               |
-| `cxx_std`    | string | `"20"`          | C++ standard                                  |
-| `deps`       | array  | `["sdl2", …]`   | vcpkg or Git deps (see below)                 |
-| `components` | object | `{ ... }`       | Map of component configs                       |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `app_name` | string | yes | Default executable / main component name |
+| `generator` | string | yes | CMake generator (`Ninja`, `Unix Makefiles`, etc.) |
+| `cxx_std` | string | yes | C++ standard (`17`, `20`, `23`) |
+| `deps` | array | no | vcpkg and git dependencies |
+| `components` | object | no | Component definitions |
+| `scripts` | object | no | Custom scripts |
 
+### Dependency formats
 
-### deps entries
-
-| Field   | Required | Example               | Meaning                                                                 |
-|---------|----------|-----------------------|-------------------------------------------------------------------------|
-| `repo`  | ✓ (git)  | `"google/filament"`   | GitHub org/repo                                                         |
-| `name`  | ✓ (git)  | `"filament"`          | Local folder/dep name (used for linking & `third_party/<name>`)        |
-| `branch`| –        | `"v3.0.0"`            | Optional branch/tag                                                     |                             |
-| `cmake` | –        | `["-DFILAMENT=ON"]`   | Optional list of cache entries injected before `add_subdirectory`       |
-
-**`cmake` entry format (structured):**
-
+**Simple vcpkg dep** — just a string:
 ```json
-"cmake": [
-  "FILAMENT_SOME_OPTION=ON"
-  "CMAKE_POLICY_DEFAULT_CMP0091=NEW"
-]
+"deps": ["sdl2", "glm"]
 ```
 
-### components entries
-
-| Field  | Type     | Allowed  | Example      | Meaning                               |
-|--------|----------|----------|--------------|---------------------------------------|
-| `kind` | string   | `exe/lib`| `"exe"`      | Component type                        |
-| `link` | string[] | names    | `["sdl2"]`   | Names of deps or other components     |
-
-
-### Commands Overview
-
-| Command                    | Purpose                                           | Common Options / Notes                                                                                   |
-|---------------------------|---------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
-| `triton init --name <dir>`       | Create new project scaffold in `<dir>`            | `triton init .` creates minimal files in current folder                                                   |
-| `triton add ...`          | Add one or more deps; optionally link to a component | Supports `pkg`, `org/repo@branch`, `pkg->Comp`; transactional with vcpkg                                  |
-| `triton link A->B`        | Component-to-component linking (creates components if missing) | New components default to `kind: "lib"`                                                        |
-| `triton remove`           | Remove/unlink deps                                | `--component <name>` to only unlink from that component                                                   |
-| `triton generate`         | Rewrite managed CMake regions from `triton.json`  | Safe: only edits the managed blocks                                                                        |
-| `triton build .`          | Configure + build via CMake                       | `--config debug|release`                                                                                  |
-| `triton run .`            | Run a built component                             | `--component <name>`, `--config ...`, `--` passes args                                                    |
-
-
-# `add` examples
-
-```bash
-triton add lua sol2
-triton add lua:Game sol2:Game
-triton add org/repo@tag:Renderer 
-```
-
-**Behavior**
-- vcpkg deps: transactional — if `vcpkg install` fails, changes to vcpkg.json are reverted and the dep is not recorded in `triton.json`.
-- Git deps: recorded only if the clone (and optional checkout) succeeds.
-- Linking to a missing component scaffolds it at `components/<name>/{src,include}` with `CMakeLists.txt`, and adds it to `triton.json` with `kind: "lib"` by default.
-
-# `remove ` examples
-
-```bash
-triton remove <pkg> # removes the package entirely from the project
-triton remove <pkg> --component <name>  # removes the package linking from <name>
-```
-
-# Build/Run
-
-```bash
-triton build . --config debug # equivalent of triton build .
-triton build . --config release
-
-triton run . -- --arg1 --arg2
-```
-
-
-## Project Layout
-
-| Path / File                                   | Purpose                                                                                   |
-|-----------------------------------------------|-------------------------------------------------------------------------------------------|
-| `your-project/`                               | Project root                                                                              |
-| `triton.json`                                 | Single source of truth for deps, components, and build settings                           |
-| `vcpkg.json`                                  | vcpkg manifest (managed transactionally by Triton)                                        |
-| `components/`                                 | Where your components live                                                                |
-| `components/CMakeLists.txt`                   | **Generated**: adds each component as a subdirectory                                      |
-| `components/App/`                              | Example component directory                                                               |
-| `components/App/CMakeLists.txt`               | Per-component build rules (**managed regions** inside)                                    |
-| `components/App/src/ …`                       | Component sources                                                                         |
-| `components/App/include/ …`                   | Component headers                                                                         |
-| `components/Core/`                             | Another component                                                                         |
-| `components/Core/CMakeLists.txt`              | Per-component CMake rules                                                                 |
-| `third_party/`                                | Git deps cloned here, e.g. `org/repo`                                                     |
-| `build/`                                      | CMake build tree(s)                                                                       |
-
-**Managed regions** in component `CMakeLists.txt` are owned by Triton and look like:
-
-```cmake
-# ## triton:deps begin
-# (generated by Triton)
-# ## triton:deps end
-```
-Anything outside that block is yours and will not be touched.
-
-### Scripts
-
-Define custom commands in `triton.json`:
-
+**vcpkg dep with options:**
 ```json
-"scripts": {
-  "dev": "triton build . --config debug && triton run . --config debug",
-  "fmt": "clang-format -i components/**/src/**/*.{h,hpp,c,cpp}"
+{
+  "name": "protobuf",
+  "os": ["windows", "linux"],
+  "triplet": ["x64-windows"],
+  "features": ["lite"],
+  "package": "Protobuf"
 }
 ```
 
-**Run With**
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Package name |
+| `os` | no | Restrict to OS list (`windows`, `linux`, `macos`) |
+| `triplet` | no | Restrict to vcpkg triplets |
+| `features` | no | vcpkg features to enable |
+| `package` | no | Override the `find_package()` name (auto-detected when possible) |
 
-```bash
-triton fmt
-triton dev
+**Git dep:**
+```json
+{
+  "repo": "google/filament",
+  "name": "filament",
+  "branch": "v1.63",
+  "cmake": [
+    "FILAMENT_ENABLE_JAVA=OFF",
+    { "var": "CMAKE_BUILD_TYPE", "val": "Release", "typ": "STRING" }
+  ]
+}
 ```
 
-Script names cannot shadow built-ins (`build`, `run`, `add`, …); Triton will error if they do.
+| Field | Required | Description |
+|-------|----------|-------------|
+| `repo` | yes | GitHub `org/repo` |
+| `name` | yes | Local name (used for `third_party/<name>`) |
+| `branch` | no | Branch or tag to checkout |
+| `cmake` | no | CMake cache variables set before `add_subdirectory` |
 
+### Component fields
 
-# Notes
-- Windows + Ninja: Triton uses `VsDevCmd.bat` to ensure MSVC is active.
-- vcpkg runs in manifest mode using your `vcpkg.json`.
-- Git deps are vendored into `third_party/<name>` and added via `add_subdirectory(...)`.
-- Re-run `triton generate` anytime you update `triton.json` to refresh managed regions.
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | `"exe"` or `"lib"` | Component type (required) |
+| `link` | array | Deps and components to link against |
+| `defines` | string[] | Preprocessor defines (`"KEY=VALUE"`) |
+| `exports` | string[] | Re-export these deps PUBLIC to dependents |
+| `resources` | string[] | Directories copied next to executable on build |
+| `assets` | string[] | Files/dirs staged incrementally (only copies changes) |
+| `link_options` | string[] or object | Linker flags (see below) |
+| `vendor_libs` | string[] or object | Pre-built library files (see below) |
+
+**Link entries** support multiple formats:
+
+```json
+"link": [
+  "sdl2",
+  { "name": "filament", "targets": ["filament", "utils"] },
+  { "name": "rmlui", "package": "RmlUi", "targets": ["RmlUi::RmlUi"] }
+]
+```
+
+**Platform-specific `link_options` and `vendor_libs`:**
+
+```json
+"link_options": {
+  "linux": ["-Wl,--export-dynamic"],
+  "windows": [],
+  "macos": []
+}
+
+"vendor_libs": {
+  "linux": ["vendor/libnethost.a"],
+  "windows": ["vendor/nethost.lib"]
+}
+```
+
+Or use a flat array to apply to all platforms.
+
+### Scripts
+
+```json
+"scripts": {
+  "dev": "triton build . && triton run .",
+  "fmt": "clang-format -i components/**/src/**/*.{h,hpp,c,cpp}",
+  "pre_build": "bash scripts/setup.sh"
+}
+```
+
+- Run with `triton <script-name>`
+- Script names cannot shadow built-in commands
+- `pre_build` is special: it runs automatically before `triton build`
+
+---
+
+## Project Layout
+
+```
+myapp/
+├── triton.json                  # your project config
+├── vcpkg.json                   # managed by Triton
+├── components/
+│   ├── CMakeLists.txt           # generated: adds subdirectories
+│   ├── CMakePresets.json        # generated: build presets
+│   ├── myapp/
+│   │   ├── CMakeLists.txt       # managed regions inside
+│   │   ├── src/
+│   │   └── include/
+│   └── core/
+│       ├── CMakeLists.txt
+│       ├── src/
+│       └── include/
+├── third_party/                 # git deps cloned here
+└── build/
+    ├── debug/
+    └── release/
+```
+
+### Managed regions
+
+Triton owns specific blocks inside component `CMakeLists.txt` files:
+
+```cmake
+# ## triton:deps begin
+# (generated by Triton — do not edit)
+# ## triton:deps end
+```
+
+Everything outside these blocks is yours and will never be touched. Run `triton generate` to refresh them after manually editing `triton.json`.
+
+> **Warning:** Avoid editing `CMakeLists.txt` files directly. Triton is designed to handle all CMake configuration through `triton.json` — manual CMake edits should be a last resort. If you find yourself needing to touch CMake directly, consider whether the change belongs in `triton.json` instead (e.g. `defines`, `link_options`, `exports`, `vendor_libs`, `resources`, `assets`).
+
+## Initializing an Existing Project
+
+```bash
+cd existing-repo
+triton init .
+# Move your code under components/<name>/src/ and components/<name>/include/
+# Add components to triton.json
+triton generate
+```
+
+Your old `CMakeLists.txt` at the project root is replaced by Triton's generated files.
+
+## Contributing
+
+PRs, issues, and suggestions welcome. Linux/macOS support is experimental — contributions especially appreciated there.

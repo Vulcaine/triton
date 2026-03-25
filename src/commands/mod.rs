@@ -9,6 +9,7 @@ pub mod testcmd;
 pub mod generate;
 pub mod install;
 pub mod cmake_install;
+pub mod find_target;
 
 pub use init::handle_init;
 pub use add::handle_add;
@@ -21,3 +22,4 @@ pub use testcmd::handle_test;
 pub use generate::handle_generate;
 pub use install::handle_install;
 pub use cmake_install::handle_cmake_install;
+pub use find_target::handle_find_target;

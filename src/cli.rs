@@ -96,6 +96,14 @@ pub enum Commands {
         cmd: CmakeCommands,
     },
 
+    /// Search for the CMake package name of an installed vcpkg dependency.
+    ///
+    /// Scans vcpkg/installed/<triplet>/share/ for matching Config.cmake files.
+    FindTarget {
+        /// The dependency name to search for (e.g. "openal-soft", "directxtex")
+        dep: String,
+    },
+
     /// Any unknown subcommand is treated as a script name + args.
     #[command(external_subcommand)]
     Script(Vec<String>),

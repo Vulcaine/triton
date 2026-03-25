@@ -206,9 +206,38 @@ if(NOT COMMAND triton_find_vcpkg_and_link_strict)
     endif()
   endfunction()
 
+  # Internal: try find_package with a candidate name + snapshot/link.
+  # Returns via _triton_found_result variable in PARENT_SCOPE.
+  function(_triton_try_find_and_link tgt candidate before_bs before_imp)
+    set(_triton_found_result FALSE PARENT_SCOPE)
+    find_package(${candidate} CONFIG QUIET)
+    if(NOT ${candidate}_FOUND)
+      find_package(${candidate} QUIET)
+    endif()
+    if(NOT ${candidate}_FOUND)
+      return()
+    endif()
+    _triton_new_targets(_new2 ${before_bs} ${before_imp})
+    list(LENGTH _new2 _n2)
+    if(_n2 EQUAL 1)
+      list(GET _new2 0 _t2)
+      target_link_libraries(${tgt} PRIVATE ${_t2})
+      set(_triton_found_result TRUE PARENT_SCOPE)
+      return()
+    elseif(_n2 GREATER 1)
+      _triton_pick_best_target(_best2 "${candidate}" "${_new2}")
+      if(_best2)
+        target_link_libraries(${tgt} PRIVATE ${_best2})
+        set(_triton_found_result TRUE PARENT_SCOPE)
+        return()
+      endif()
+    endif()
+  endfunction()
+
   function(triton_find_vcpkg_and_link_strict tgt pkg)
     _triton_dir_targets(_before_bs _before_imp)
 
+    # --- Stage 1: try the package name as-is ---
     find_package(${pkg} CONFIG QUIET)
     if(NOT ${pkg}_FOUND)
       find_package(${pkg} QUIET)
@@ -230,18 +259,65 @@ if(NOT COMMAND triton_find_vcpkg_and_link_strict)
 triton: multiple targets introduced by package '${pkg}':
   ${_new}
 Please specify an explicit mapping in triton.json:
-  { "name": "${pkg}", "package": "<Pkg>", "target": "<Pkg::Target>" }
+  { "name": "${pkg}", "package": "<Pkg>", "targets": ["<Pkg::Target>"] }
 ]])
     endif()
 
+    # --- Stage 2: try common name variations ---
+    # Replace hyphens with underscores: nlohmann-json → nlohmann_json
+    string(REPLACE "-" "_" _underscore "${pkg}")
+    # Uppercase: sdl2 → SDL2
+    string(TOUPPER "${pkg}" _upper)
+    # Uppercase with underscores: sdl2-mixer → SDL2_MIXER
+    string(TOUPPER "${_underscore}" _upper_underscore)
+
+    set(_variants "${_underscore}" "${_upper}" "${_upper_underscore}")
+    list(REMOVE_DUPLICATES _variants)
+    list(REMOVE_ITEM _variants "${pkg}") # don't retry the original
+
+    foreach(_try IN LISTS _variants)
+      _triton_dir_targets(_vb_bs _vb_imp)
+      _triton_try_find_and_link(${tgt} "${_try}" _vb_bs _vb_imp)
+      if(_triton_found_result)
+        return()
+      endif()
+    endforeach()
+
+    # --- Stage 3: scan vcpkg share directory for matching Config.cmake ---
+    if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+      set(_share_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share")
+      if(EXISTS "${_share_root}")
+        string(TOLOWER "${pkg}" _pkg_lower)
+        string(REPLACE "-" "_" _pkg_norm "${_pkg_lower}")
+        file(GLOB _share_entries LIST_DIRECTORIES true "${_share_root}/*")
+        foreach(_entry IN LISTS _share_entries)
+          if(IS_DIRECTORY "${_entry}")
+            get_filename_component(_dirname "${_entry}" NAME)
+            string(TOLOWER "${_dirname}" _dirname_lower)
+            string(REPLACE "-" "_" _dirname_norm "${_dirname_lower}")
+            # Match: case-insensitive or hyphen/underscore normalized
+            if(_dirname_lower STREQUAL _pkg_lower OR _dirname_norm STREQUAL _pkg_norm)
+              if(NOT _dirname STREQUAL "${pkg}")
+                # Found a matching dir with different casing — try it
+                _triton_dir_targets(_sd_bs _sd_imp)
+                _triton_try_find_and_link(${tgt} "${_dirname}" _sd_bs _sd_imp)
+                if(_triton_found_result)
+                  return()
+                endif()
+              endif()
+            endif()
+          endif()
+        endforeach()
+      endif()
+    endif()
+
+    # --- Stage 4: legacy module variables ---
     string(REGEX REPLACE "[^A-Za-z0-9]" "_" _pfx "${pkg}")
     string(TOUPPER "${_pfx}" _PFX)
-    # Also try Title Case (e.g. stb -> Stb) for find modules that set Stb_INCLUDE_DIR
     string(SUBSTRING "${_pfx}" 0 1 _first_char)
     string(TOUPPER "${_first_char}" _first_upper)
     string(SUBSTRING "${_pfx}" 1 -1 _rest)
     set(_TitleCase "${_first_upper}${_rest}")
-    # Try all common variable prefixes
     set(_synth "")
     foreach(_try_pfx IN ITEMS "${_PFX}" "${_pfx}" "${_TitleCase}" "${pkg}")
       if(NOT _synth)
@@ -253,10 +329,9 @@ Please specify an explicit mapping in triton.json:
       return()
     endif()
 
-    # Fallback: try pkg-config
+    # --- Stage 5: pkg-config ---
     find_package(PkgConfig QUIET)
     if(PKG_CONFIG_FOUND)
-      # Try common pkg-config names: pkg, pkg2, libpkg
       foreach(_pc_name ${pkg} ${pkg}2 lib${pkg})
         pkg_check_modules(_pc_${_pfx} QUIET IMPORTED_TARGET ${_pc_name})
         if(_pc_${_pfx}_FOUND)
@@ -266,7 +341,7 @@ Please specify an explicit mapping in triton.json:
       endforeach()
     endif()
 
-    # Fallback: try find_library directly
+    # --- Stage 6: raw find_library ---
     find_library(_fl_${_pfx} NAMES ${pkg} ${pkg}2 lib${pkg})
     if(_fl_${_pfx})
       target_link_libraries(${tgt} PRIVATE ${_fl_${_pfx}})
@@ -277,7 +352,12 @@ Please specify an explicit mapping in triton.json:
       return()
     endif()
 
-    message(FATAL_ERROR "triton: could not determine a target for package '${pkg}'.")
+    # --- Stage 7: warning (not fatal) ---
+    message(WARNING
+      "triton: could not auto-detect a CMake target for '${pkg}'.\n"
+      "You likely need to specify the package name in triton.json:\n"
+      "  { \"name\": \"${pkg}\", \"package\": \"<CMakePackageName>\" }\n"
+      "Run 'triton find-target ${pkg}' or check vcpkg/installed/<triplet>/share/ for the correct name.")
   endfunction()
 
   # --- Helper: apply iterator policy to a target (non-IMPORTED, non-INTERFACE)

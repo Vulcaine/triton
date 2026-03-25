@@ -18,7 +18,7 @@ fn testcmd_runs_build_if_missing() {
     copy_offline_vcpkg_to(&proj);
 
     std::env::set_current_dir(&td).unwrap();
-    handle_init(Some("proj-testcmd"), "x64-windows", "Ninja").unwrap();
+    handle_init(Some("proj-testcmd"), "Ninja", "20").unwrap();
 
     let build_dir = proj.join("build");
     if build_dir.exists() {

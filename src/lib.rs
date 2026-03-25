@@ -14,6 +14,7 @@ pub mod commands {
     pub mod testcmd;
     pub mod generate;
     pub mod install;
+    pub mod find_target;
 
     pub use add::handle_add;
     pub use build::handle_build;
@@ -24,6 +25,7 @@ pub mod commands {
     pub use script::handle_script;
     pub use testcmd::handle_test;
     pub use install::handle_install;
+    pub use find_target::handle_find_target;
 }
 
 pub use commands::{

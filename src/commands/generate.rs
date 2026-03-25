@@ -6,11 +6,13 @@ use crate::cmake::{
 };
 use crate::models::{DepSpec, TritonRoot};
 use crate::templates::cmake_presets;
-use crate::util::{read_json, write_text_if_changed};
+use crate::util::{read_json, validate_triton_root, write_text_if_changed};
 
 pub fn handle_generate() -> Result<()> {
     eprintln!("Regenerating project CMake + vcpkg manifest...");
     let root: TritonRoot = read_json("triton.json")?;
+
+    validate_triton_root(&root)?;
 
     let cmake_ver = effective_cmake_version();
 

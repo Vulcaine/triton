@@ -12,7 +12,7 @@ mod util;
 use cli::{Cli, Commands, CmakeCommands};
 use commands::{
     handle_add, handle_build, handle_generate, handle_init, handle_link, handle_remove,
-    handle_run, handle_script, handle_test, handle_cmake_install
+    handle_run, handle_script, handle_test, handle_cmake_install, handle_find_target
 };
 
 use std::borrow::Cow;
@@ -67,6 +67,9 @@ fn main() -> Result<()> {
         Commands::Cmake { cmd } => match cmd {
             CmakeCommands::Install { version } => handle_cmake_install(version),
         },
+
+        Commands::FindTarget { dep } =>
+            handle_find_target(&dep),
 
         Commands::Script(v) =>
             handle_script(&v),

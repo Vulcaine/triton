@@ -57,7 +57,7 @@ fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
             kind: "lib".into(),
             link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())],
             defines: vec![],
-            exports: vec![], assets: vec![],
+            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
         },
     );
     meta.components.insert(
@@ -66,7 +66,7 @@ fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
             kind: "lib".into(),
             link: vec![LinkEntry::Name("glm".into())],
             defines: vec![],
-            exports: vec![], assets: vec![],
+            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
         },
     );
 
@@ -127,7 +127,7 @@ fn remove_vcpkg_dep_globally_updates_manifest_and_unlinks_everywhere() {
             kind: "lib".into(),
             link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())],
             defines: vec![],
-            exports: vec![], assets: vec![],
+            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
         },
     );
     meta.components.insert(
@@ -136,7 +136,7 @@ fn remove_vcpkg_dep_globally_updates_manifest_and_unlinks_everywhere() {
             kind: "exe".into(),
             link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())],
             defines: vec![],
-            exports: vec![], assets: vec![],
+            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
         },
     );
 
@@ -204,7 +204,7 @@ fn remove_git_dep_globally_unlinks_everywhere_and_prunes_third_party_if_unused()
             kind: "lib".into(),
             link: vec![LinkEntry::Name("filament".into())],
             defines: vec![],
-            exports: vec![], assets: vec![],
+            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
         },
     );
 

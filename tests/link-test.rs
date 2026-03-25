@@ -5,7 +5,7 @@ use tempfile::tempdir;
 use serial_test::serial;
 
 use triton::handle_link;
-use triton::models::{DepSpec, TritonComponent, TritonRoot};
+use triton::models::{DepSpec, LinkEntry, TritonComponent, TritonRoot};
 use triton::util::{read_json, write_json_pretty_changed};
 
 /// Write minimal template files under ./resources that the generator expects.
@@ -133,6 +133,9 @@ fn link_component_to_component_is_rhs_directional() {
                 link: vec![],
                 defines: vec![],
                 exports: vec![],
+                resources: vec![],
+                link_options: Default::default(),
+                vendor_libs: Default::default(),
                 assets: vec![],
             },
         );
@@ -222,4 +225,239 @@ fn linking_is_idempotent() {
         })
         .count();
     assert_eq!(count, 1, "Link A should appear exactly once in B.link");
+}
+
+#[test]
+#[serial]
+fn link_preserves_existing_defines() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    write_minimal_resources(root);
+    init_project(root, &[DepSpec::Simple("glm".into())]);
+    std::env::set_current_dir(root).unwrap();
+
+    // Pre-create a component with defines
+    {
+        let mut proj: TritonRoot = read_json("triton.json").unwrap();
+        proj.components.insert(
+            "Core".into(),
+            TritonComponent {
+                kind: "lib".into(),
+                link: vec![],
+                defines: vec!["MY_DEF".into()],
+                exports: vec![],
+                resources: vec![],
+                link_options: Default::default(),
+                vendor_libs: Default::default(),
+                assets: vec![],
+            },
+        );
+        write_json_pretty_changed("triton.json", &proj).unwrap();
+        fs::create_dir_all("components/Core/src").unwrap();
+        fs::create_dir_all("components/Core/include").unwrap();
+        fs::write(
+            "components/Core/CMakeLists.txt",
+            read_to_string(root.join("resources/cmake_template.cmake")),
+        )
+        .unwrap();
+    }
+
+    handle_link("glm", "Core").expect("link glm->Core");
+
+    let proj: TritonRoot = read_json("triton.json").unwrap();
+    let core = proj.components.get("Core").expect("Core exists");
+    assert!(
+        core.defines.contains(&"MY_DEF".to_string()),
+        "defines should still contain MY_DEF after linking"
+    );
+    assert!(
+        core.link.iter().any(|e| {
+            let (n, _) = e.normalize();
+            n == "glm"
+        }),
+        "Core should link to glm"
+    );
+}
+
+#[test]
+#[serial]
+fn link_preserves_exports() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    write_minimal_resources(root);
+    init_project(
+        root,
+        &[
+            DepSpec::Simple("glm".into()),
+            DepSpec::Simple("sdl2".into()),
+        ],
+    );
+    std::env::set_current_dir(root).unwrap();
+
+    // Pre-create a component with exports and an existing link
+    {
+        let mut proj: TritonRoot = read_json("triton.json").unwrap();
+        proj.components.insert(
+            "Core".into(),
+            TritonComponent {
+                kind: "lib".into(),
+                link: vec![LinkEntry::Name("glm".into())],
+                defines: vec![],
+                exports: vec!["glm".into()],
+                resources: vec![],
+                link_options: Default::default(),
+                vendor_libs: Default::default(),
+                assets: vec![],
+            },
+        );
+        write_json_pretty_changed("triton.json", &proj).unwrap();
+        fs::create_dir_all("components/Core/src").unwrap();
+        fs::create_dir_all("components/Core/include").unwrap();
+        fs::write(
+            "components/Core/CMakeLists.txt",
+            read_to_string(root.join("resources/cmake_template.cmake")),
+        )
+        .unwrap();
+    }
+
+    handle_link("sdl2", "Core").expect("link sdl2->Core");
+
+    let proj: TritonRoot = read_json("triton.json").unwrap();
+    let core = proj.components.get("Core").expect("Core exists");
+    assert!(
+        core.exports.contains(&"glm".to_string()),
+        "exports should still contain glm after linking sdl2"
+    );
+    assert!(
+        core.link.iter().any(|e| {
+            let (n, _) = e.normalize();
+            n == "sdl2"
+        }),
+        "Core should now also link to sdl2"
+    );
+}
+
+#[test]
+#[serial]
+fn link_dep_with_named_entry_package_hint() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    write_minimal_resources(root);
+    init_project(
+        root,
+        &[
+            DepSpec::Simple("glm".into()),
+            DepSpec::Simple("entt".into()),
+        ],
+    );
+    std::env::set_current_dir(root).unwrap();
+
+    // Pre-create a component with a Named LinkEntry (with package hint)
+    {
+        let mut proj: TritonRoot = read_json("triton.json").unwrap();
+        proj.components.insert(
+            "Core".into(),
+            TritonComponent {
+                kind: "lib".into(),
+                link: vec![LinkEntry::Named {
+                    name: "glm".into(),
+                    package: Some("glm".into()),
+                    targets: None,
+                }],
+                defines: vec![],
+                exports: vec![],
+                resources: vec![],
+                link_options: Default::default(),
+                vendor_libs: Default::default(),
+                assets: vec![],
+            },
+        );
+        write_json_pretty_changed("triton.json", &proj).unwrap();
+        fs::create_dir_all("components/Core/src").unwrap();
+        fs::create_dir_all("components/Core/include").unwrap();
+        fs::write(
+            "components/Core/CMakeLists.txt",
+            read_to_string(root.join("resources/cmake_template.cmake")),
+        )
+        .unwrap();
+    }
+
+    handle_link("entt", "Core").expect("link entt->Core");
+
+    let proj: TritonRoot = read_json("triton.json").unwrap();
+    let core = proj.components.get("Core").expect("Core exists");
+
+    // The Named entry for glm should still be present
+    let has_named_glm = core.link.iter().any(|e| matches!(
+        e,
+        LinkEntry::Named { name, package, .. } if name == "glm" && package.as_deref() == Some("glm")
+    ));
+    assert!(has_named_glm, "Named glm entry with package hint should be preserved");
+
+    // The new entt link should also be present
+    assert!(
+        core.link.iter().any(|e| {
+            let (n, _) = e.normalize();
+            n == "entt"
+        }),
+        "Core should also link to entt"
+    );
+}
+
+#[test]
+#[serial]
+fn link_multiple_deps_sequentially() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    write_minimal_resources(root);
+    init_project(
+        root,
+        &[
+            DepSpec::Simple("glm".into()),
+            DepSpec::Simple("sdl2".into()),
+        ],
+    );
+    std::env::set_current_dir(root).unwrap();
+
+    handle_link("glm", "Core").expect("link glm->Core");
+    handle_link("sdl2", "Core").expect("link sdl2->Core");
+
+    let proj: TritonRoot = read_json("triton.json").unwrap();
+    let core = proj.components.get("Core").expect("Core exists");
+    assert!(
+        core.link.iter().any(|e| {
+            let (n, _) = e.normalize();
+            n == "glm"
+        }),
+        "Core should link to glm"
+    );
+    assert!(
+        core.link.iter().any(|e| {
+            let (n, _) = e.normalize();
+            n == "sdl2"
+        }),
+        "Core should link to sdl2"
+    );
+}
+
+#[test]
+#[serial]
+fn link_creates_component_cmake_with_deps_markers() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    write_minimal_resources(root);
+    init_project(root, &[DepSpec::Simple("glm".into())]);
+    std::env::set_current_dir(root).unwrap();
+
+    handle_link("glm", "Render").expect("link glm->Render");
+
+    let cm = read_to_string(root.join("components/Render/CMakeLists.txt"));
+    assert!(
+        cm.contains("triton:deps begin"),
+        "CMakeLists.txt should contain 'triton:deps begin' marker"
+    );
+    assert!(
+        cm.contains("triton:deps end"),
+        "CMakeLists.txt should contain 'triton:deps end' marker"
+    );
 }

@@ -3,7 +3,8 @@ use anyhow::Result;
 use crate::cmake::{dep_is_active, detect_vcpkg_triplet, effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::{LinkEntry, TritonComponent, TritonRoot};
 use crate::util::{
-    ensure_component_scaffold, has_link_to_name, is_dep, read_json, write_json_pretty_changed,
+    ensure_component_scaffold, has_link_to_name, is_dep, read_json, validate_triton_root,
+    write_json_pretty_changed,
 };
 
 /// Link one component to another (adds dependency edge).
@@ -12,6 +13,11 @@ use crate::util::{
 ///   - If A is a dep (in root.deps): link dep A -> component B (create B scaffold if needed).
 ///   - If A is not a dep: link component A -> component B (create scaffolds if needed).
 pub fn handle_link(from: &str, to: &str) -> Result<()> {
+    // Self-link check
+    if from == to {
+        anyhow::bail!("Component '{}' cannot link to itself.", from);
+    }
+
     // Load current project state
     let mut root: TritonRoot = read_json("triton.json")?;
 
@@ -71,6 +77,9 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
             to_comp.link.push(LinkEntry::Name(from.into()));
         }
     }
+
+    // Validate before persisting
+    validate_triton_root(&root)?;
 
     // Persist triton.json
     write_json_pretty_changed("triton.json", &root)?;

@@ -4,8 +4,8 @@ use serial_test::serial;
 
 use triton::{
     commands::handle_add,
-    models::{TritonRoot, DepSpec, LinkEntry},
-    util::read_json,
+    models::{TritonRoot, DepSpec, LinkEntry, TritonComponent},
+    util::{read_json, write_json_pretty_changed},
 };
 
 fn write(path: impl AsRef<Path>, s: &str) {
@@ -166,7 +166,9 @@ fn add_vcpkg_dep_with_component_scaffolds_and_links() -> Result<()> {
 fn add_git_dep_records_and_links_without_clone_when_already_present() -> Result<()> {
     with_temp_dir(|root| {
         init_min_triton_json(root);
+        // Pre-create with a file so clone is skipped (empty dirs get removed)
         fs::create_dir_all(root.join("third_party/filament"))?;
+        fs::write(root.join("third_party/filament/.gitkeep"), "")?;
 
         handle_add(&[String::from("google/filament@main:UI")], None, false)?;
 
@@ -205,6 +207,197 @@ fn add_vcpkg_dep_is_idempotent() -> Result<()> {
         let deps = mani["dependencies"].as_array().unwrap();
         let count2 = deps.iter().filter(|v| *v == "entt").count();
         assert_eq!(count2, 1);
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_multiple_deps_at_once() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        handle_add(
+            &[String::from("glm"), String::from("sdl2"), String::from("entt")],
+            None,
+            false,
+        )?;
+
+        let t = read_triton(root);
+        assert!(t.deps.iter().any(|d| matches!(d, DepSpec::Simple(n) if n == "glm")));
+        assert!(t.deps.iter().any(|d| matches!(d, DepSpec::Simple(n) if n == "sdl2")));
+        assert!(t.deps.iter().any(|d| matches!(d, DepSpec::Simple(n) if n == "entt")));
+
+        let mani = read_vcpkg(root);
+        let deps = mani["dependencies"].as_array().unwrap();
+        assert!(deps.iter().any(|v| v == "glm"));
+        assert!(deps.iter().any(|v| v == "sdl2"));
+        assert!(deps.iter().any(|v| v == "entt"));
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_with_arrow_syntax() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        handle_add(&[String::from("lua->Engine")], None, false)?;
+
+        let t = read_triton(root);
+        assert!(t.deps.iter().any(|d| matches!(d, DepSpec::Simple(n) if n == "lua")));
+
+        let engine = t.components.get("Engine").expect("Engine component should exist");
+        assert!(
+            engine.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == "lua")),
+            "Engine should have lua link"
+        );
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_git_dep_full_url() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+
+        // Pre-create third_party/imgui with a dummy file to skip clone
+        fs::create_dir_all(root.join("third_party/imgui"))?;
+        fs::write(root.join("third_party/imgui/.gitkeep"), "")?;
+
+        handle_add(
+            &[String::from("https://github.com/ocornut/imgui.git@docking->UI")],
+            None,
+            false,
+        )?;
+
+        let t = read_triton(root);
+        let git_dep = t.deps.iter().find(|d| matches!(d, DepSpec::Git(g) if g.name == "imgui"));
+        assert!(git_dep.is_some(), "imgui git dep should exist");
+
+        if let Some(DepSpec::Git(g)) = git_dep {
+            assert_eq!(g.branch.as_deref(), Some("docking"));
+        }
+
+        let ui = t.components.get("UI").expect("UI component should exist");
+        assert!(
+            ui.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == "imgui")),
+            "UI should link to imgui"
+        );
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_git_dep_shorthand_no_branch() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+
+        // Pre-create third_party/filament with a dummy file to skip clone
+        fs::create_dir_all(root.join("third_party/filament"))?;
+        fs::write(root.join("third_party/filament/.gitkeep"), "")?;
+
+        handle_add(
+            &[String::from("google/filament:Render")],
+            None,
+            false,
+        )?;
+
+        let t = read_triton(root);
+        let git_dep = t.deps.iter().find(|d| matches!(d, DepSpec::Git(g) if g.name == "filament"));
+        assert!(git_dep.is_some(), "filament git dep should exist");
+
+        if let Some(DepSpec::Git(g)) = git_dep {
+            assert!(g.branch.is_none(), "branch should be None when not specified");
+        }
+
+        let render = t.components.get("Render").expect("Render component should exist");
+        assert!(
+            render.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == "filament")),
+            "Render should link to filament"
+        );
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_to_existing_component_preserves_other_links() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        // Pre-create "Game" component with an existing link to "glm"
+        {
+            let mut t: TritonRoot = read_json(root.join("triton.json")).unwrap();
+            t.deps.push(DepSpec::Simple("glm".into()));
+            t.components.insert(
+                "Game".into(),
+                TritonComponent {
+                    kind: "exe".into(),
+                    link: vec![LinkEntry::Name("glm".into())],
+                    defines: vec![],
+                    exports: vec![],
+                    resources: vec![],
+                    link_options: Default::default(),
+                    vendor_libs: Default::default(),
+                    assets: vec![],
+                },
+            );
+            write_json_pretty_changed(root.join("triton.json"), &t).unwrap();
+            fs::create_dir_all(root.join("components/Game/src")).unwrap();
+            fs::create_dir_all(root.join("components/Game/include")).unwrap();
+        }
+
+        // Add sdl2 linked to the existing Game component
+        handle_add(&[String::from("sdl2:Game")], None, false)?;
+
+        let t = read_triton(root);
+        let game = t.components.get("Game").expect("Game component should exist");
+        assert!(
+            game.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == "glm")),
+            "Game should still have glm link"
+        );
+        assert!(
+            game.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == "sdl2")),
+            "Game should also have sdl2 link"
+        );
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_creates_vcpkg_json_if_missing() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        stub_vcpkg(&root.join("bin"));
+
+        // Deliberately do NOT create vcpkg.json
+        assert!(!root.join("vcpkg.json").exists());
+
+        handle_add(&[String::from("glm")], None, false)?;
+
+        // vcpkg.json should now exist
+        assert!(root.join("vcpkg.json").exists(), "vcpkg.json should be created automatically");
+
+        let mani = read_vcpkg(root);
+        let deps = mani["dependencies"].as_array().unwrap();
+        assert!(deps.iter().any(|v| v == "glm"));
 
         Ok(())
     })
