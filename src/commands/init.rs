@@ -3,18 +3,25 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use crate::models::{RootDep, TritonComponent, TritonRoot};
+use crate::cmake::{detect_vcpkg_triplet, effective_cmake_version};
+use crate::models::{DepSpec, LinkEntry, TritonComponent, TritonRoot};
 use crate::templates::{cmake_presets, component_cmakelists, components_dir_cmakelists};
 use crate::tools::ensure_ninja_dir;
 use crate::util::{run, write_json_pretty_changed, write_text_if_changed, Change};
+use crate::util; // for read_json
 
-pub fn handle_init(name_opt: Option<&str>, triplet: &str, generator: &str, cxx_std: &str) -> Result<()> {
+pub fn handle_init(
+    name_opt: Option<&str>,
+    generator: &str,
+    cxx_std: &str,
+) -> Result<()> {
     let cwd = env::current_dir().context("cannot get current directory")?;
-    let (project_dir, minimal_mode) = match name_opt {
-        // `triton init .` or just `triton init` => minimal init in current directory, no component scaffold
-        Some(".") | None => (cwd.clone(), true),
-        // `triton init NAME` => create a new subfolder project with scaffold
-        Some(name) => (cwd.join(name), false),
+
+    let minimal_mode = matches!(name_opt, None | Some("."));
+    let project_dir = if minimal_mode {
+        cwd.clone()
+    } else {
+        cwd.join(name_opt.unwrap())
     };
 
     if !project_dir.exists() {
@@ -23,112 +30,220 @@ pub fn handle_init(name_opt: Option<&str>, triplet: &str, generator: &str, cxx_s
     env::set_current_dir(&project_dir)
         .with_context(|| format!("cd into {}", project_dir.display()))?;
 
+    // Ensure Ninja if requested
     if generator.eq_ignore_ascii_case("ninja") {
         let _ = ensure_ninja_dir(&project_dir);
     }
 
-    // app name from folder name (even for minimal mode)
     let app_name: String = project_dir
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("MyProject")
         .to_string();
 
-    let mut changes: Vec<(String, Change)> = Vec::new();
+    let mut _changes: Vec<(String, Change)> = Vec::new();
 
-    // Minimal mode: write triton.json + components/CMakeLists.txt + components/CMakePresets.json
-    if minimal_mode {
-        fs::create_dir_all("components")?;
-        changes.push((
-            "components/CMakeLists.txt".into(),
-            write_text_if_changed("components/CMakeLists.txt", &components_dir_cmakelists())?,
-        ));
-        changes.push((
-            "components/CMakePresets.json".into(),
-            write_text_if_changed(
-                "components/CMakePresets.json",
-                &cmake_presets(&app_name, generator, triplet),
-            )?,
-        ));
-
-        let mut root = TritonRoot::default();
-        root.app_name = app_name.clone();
-        root.triplet = triplet.to_string();
-        root.generator = generator.to_string();
-        root.cxx_std = cxx_std.to_string();
-        root.deps = Vec::<RootDep>::new();
-        // No auto component scaffold
-        changes.push(("triton.json".into(), write_json_pretty_changed("triton.json", &root)?));
-
-        eprintln!("\nInitialized Triton in existing project '{}'.", app_name);
-        eprintln!("• Created triton.json, components/CMakeLists.txt, components/CMakePresets.json");
-        eprintln!("• Put your existing components under ./components/<name> with their own CMakeLists.txt");
-        eprintln!("• You can add new ones with: triton link App->Lib, triton add <dep>, etc.");
-        return Ok(());
-    }
-
-    // NEW PROJECT scaffold mode (full)
-    // vcpkg clone if missing (still at repo root)
-    if !Path::new("vcpkg").exists() {
-        eprintln!("Cloning vcpkg...");
-        run("git", &["clone", "https://github.com/microsoft/vcpkg.git", "vcpkg"], ".")?;
-        changes.push(("vcpkg/ (git clone)".into(), Change::Created));
-    } else {
-        changes.push(("vcpkg/".into(), Change::Unchanged));
-    }
-
-    // components/ root files
+    // components/ base
     fs::create_dir_all("components")?;
-    changes.push((
+    _changes.push((
         "components/CMakeLists.txt".into(),
         write_text_if_changed("components/CMakeLists.txt", &components_dir_cmakelists())?,
     ));
-    changes.push((
+
+    // Parse our minimum CMake version once and pass to templates
+    let cmake_ver = effective_cmake_version();
+
+    // Preserve user-passed generator; detect triplet from environment
+    let triplet = detect_vcpkg_triplet();
+    _changes.push((
         "components/CMakePresets.json".into(),
         write_text_if_changed(
             "components/CMakePresets.json",
-            &cmake_presets(&app_name, generator, triplet),
+            &cmake_presets(&app_name, generator, &triplet, cmake_ver),
         )?,
     ));
 
-    // folders & sample for the executable component
-    fs::create_dir_all(format!("components/{}/src", app_name))?;
-    fs::create_dir_all(format!("components/{}/include", app_name))?;
-    let hello = r#"#include <iostream>
+    // Load or seed triton.json
+    let mut root: TritonRoot = if Path::new("triton.json").exists() {
+        util::read_json("triton.json")?
+    } else {
+        let mut r = TritonRoot::default();
+        r.app_name = app_name.clone();
+        r.generator = generator.to_string();
+        r.cxx_std = cxx_std.to_string();
+        r
+    };
+
+    if root.app_name.is_empty() {
+        root.app_name = app_name.clone();
+    }
+
+    if root.generator.is_empty() {
+        root.generator = generator.to_string();
+    }
+
+    if root.cxx_std.is_empty() {
+        root.cxx_std = cxx_std.to_string();
+    }
+
+    // app scaffold
+    if !minimal_mode {
+        let comp_dir = format!("components/{}", app_name);
+        if !Path::new(&comp_dir).exists() {
+            fs::create_dir_all(format!("{}/src", comp_dir))?;
+            fs::create_dir_all(format!("{}/include", comp_dir))?;
+            let hello = r#"#include <iostream>
 int main() { std::cout << "Hello from triton app!\n"; return 0; }
 "#;
-    changes.push((
-        format!("components/{}/src/main.cpp", app_name),
-        write_text_if_changed(format!("components/{}/src/main.cpp", app_name), hello)?,
-    ));
-    changes.push((
-        format!("components/{}/CMakeLists.txt", app_name),
-        write_text_if_changed(
-            format!("components/{}/CMakeLists.txt", app_name),
-            &component_cmakelists(),
-        )?,
-    ));
+            let main_cpp = format!("{}/src/main.cpp", comp_dir);
+            if !Path::new(&main_cpp).exists() {
+                _changes.push((main_cpp.clone(), write_text_if_changed(&main_cpp, hello)?));
+            }
+            let comp_cmake = format!("{}/CMakeLists.txt", comp_dir);
+            if !Path::new(&comp_cmake).exists() {
+                _changes.push((
+                    comp_cmake.clone(),
+                    write_text_if_changed(&comp_cmake, &component_cmakelists(false))?,
+                ));
+            }
+            root.components
+                .entry(app_name.clone())
+                .or_insert_with(|| TritonComponent {
+                    kind: "exe".into(),
+                    ..Default::default()
+                });
+        }
+    }
 
-    // root metadata
-    let mut root = TritonRoot::default();
-    root.app_name = app_name.clone();
-    root.triplet = triplet.to_string();
-    root.generator = generator.to_string();
-    root.cxx_std = cxx_std.to_string();
-    root.deps = Vec::<RootDep>::new();
+    // Discover existing component directories (any subdir of components/ with a CMakeLists.txt)
+    let components_path = Path::new("components");
+    if components_path.is_dir() {
+        if let Ok(entries) = fs::read_dir(components_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() { continue; }
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                // Skip tests — handled separately below
+                if name == "tests" { continue; }
+                // Only register if it has a CMakeLists.txt
+                if !path.join("CMakeLists.txt").exists() { continue; }
+                // Detect kind: exe if main.cpp exists, else lib
+                let kind = if path.join("src/main.cpp").exists() { "exe" } else { "lib" };
+                root.components
+                    .entry(name)
+                    .or_insert_with(|| TritonComponent {
+                        kind: kind.into(),
+                        ..Default::default()
+                    });
+            }
+        }
+    }
+
+    // tests component
+    let tests_dir = Path::new("components/tests");
+    if !tests_dir.exists() {
+        fs::create_dir_all(tests_dir.join("src"))?;
+        fs::create_dir_all(tests_dir.join("include"))?;
+    }
+
+    let test_cpp = tests_dir.join("src/test_main.cpp");
+    if !test_cpp.exists() {
+        let test_code = r#"#include <gtest/gtest.h>
+
+TEST(SampleTest, BasicAssertions) {
+    EXPECT_EQ(1 + 1, 2);
+}
+
+int main(int argc, char **argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}
+"#;
+        _changes.push((
+            test_cpp.display().to_string(),
+            write_text_if_changed(test_cpp.to_str().unwrap(), test_code)?,
+        ));
+    }
+
+    let tests_cmake = tests_dir.join("CMakeLists.txt");
+    if !tests_cmake.exists() {
+        let tests_cmake_txt = component_cmakelists(true);
+        _changes.push((
+            tests_cmake.display().to_string(),
+            write_text_if_changed(tests_cmake.to_str().unwrap(), &tests_cmake_txt)?,
+        ));
+    }
+
     root.components
-        .insert(app_name.clone(), TritonComponent { kind: "exe".into(), link: vec![], defines: vec![], exports: vec![] });
+        .entry("tests".into())
+        .or_insert_with(|| TritonComponent {
+            kind: "exe".into(),
+            link: vec![LinkEntry::Name("GTest".into())],
+            ..Default::default()
+        });
 
-    changes.push(("triton.json".into(), write_json_pretty_changed("triton.json", &root)?));
+    if !root
+        .deps
+        .iter()
+        .any(|d| matches!(d, DepSpec::Simple(n) if n.eq_ignore_ascii_case("gtest")))
+    {
+        root.deps.push(DepSpec::Simple("gtest".into()));
+    }
 
-    // vcpkg manifest (empty to start)
-    let manifest =
-        serde_json::json!({ "name": app_name, "version": "0.0.0", "dependencies": [] });
-    changes.push((
-        "vcpkg.json".into(),
-        write_text_if_changed("vcpkg.json", &serde_json::to_string_pretty(&manifest)?)?,
+    _changes.push((
+        "triton.json".into(),
+        write_json_pretty_changed("triton.json", &root)?,
     ));
 
-    eprintln!("\nInitialized project '{}'.", app_name);
+    // Ensure vcpkg.json
+    let vcpkg_path = Path::new("vcpkg.json");
+    let mut vcpkg_doc = if vcpkg_path.exists() {
+        let s = fs::read_to_string(vcpkg_path)?;
+        serde_json::from_str::<serde_json::Value>(&s).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({
+            "name": app_name.to_lowercase().replace('_', "-"),
+            "version": "0.0.0",
+            "dependencies": []
+        })
+    };
+    if !vcpkg_doc
+        .get("dependencies")
+        .map(|v| v.is_array())
+        .unwrap_or(false)
+    {
+        vcpkg_doc["dependencies"] = serde_json::json!([]);
+    }
+    let deps = vcpkg_doc["dependencies"].as_array_mut().unwrap();
+    if !deps
+        .iter()
+        .any(|d| d.is_string() && d.as_str().unwrap().eq_ignore_ascii_case("gtest"))
+    {
+        deps.push(serde_json::json!("gtest"));
+    }
+    _changes.push((
+        "vcpkg.json".into(),
+        write_text_if_changed("vcpkg.json", &serde_json::to_string_pretty(&vcpkg_doc)?)?,
+    ));
+
+    // clone vcpkg if not present
+    if !Path::new("vcpkg").exists() {
+        eprintln!("Cloning vcpkg...");
+        run("git", &["clone", "https://github.com/microsoft/vcpkg.git", "vcpkg"], ".")?;
+        _changes.push(("vcpkg/ (git clone)".into(), Change::Created));
+    }
+
+    if minimal_mode {
+        eprintln!(
+            "\nInitialized Triton in existing project '{}'. (tests and core ensured)",
+            app_name
+        );
+    } else {
+        eprintln!("\nInitialized project '{}' (app + tests ensured).", app_name);
+    }
+
     Ok(())
 }

@@ -7,12 +7,16 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
+use crate::cmake::{detect_vcpkg_triplet, effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake};
 use crate::models::TritonRoot;
 use crate::templates::cmake_presets;
-use crate::tools::ensure_ninja_dir;
-use crate::util::read_json;
+use crate::tools::{ensure_ninja_dir, ensure_vcpkg};
+use crate::util::{normalize_path, read_json};
+use crate::commands::handle_install;
 
+//
+// === Helpers ===
+//
 pub fn normalize_config(cfg: &str) -> &'static str {
     match cfg.trim().to_ascii_lowercase().as_str() {
         "release" | "rel" | "r" => "release",
@@ -29,9 +33,10 @@ pub fn preset_for(cfg: &str) -> &'static str {
 }
 
 pub fn build_dir_for(project: &Path, cfg: &str) -> PathBuf {
-    project.join(format!("build/{}", cfg))
+    project.join("build").join(cfg)
 }
 
+/// Detect if CMake has already configured this build dir for the right generator.
 pub fn is_configured_for_generator(build_dir: &Path, generator: &str) -> bool {
     let cache = build_dir.join("CMakeCache.txt");
     if !cache.exists() {
@@ -96,10 +101,10 @@ pub fn resolve_generator_for_preset(
     None
 }
 
+/// Windows-only helpers to load the MSVC env via VsDevCmd so Ninja+MSVC works from a plain shell.
 #[cfg(windows)]
 fn vsdevcmd_path() -> Option<PathBuf> {
-    let vswhere =
-        PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
+    let vswhere = PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
     if !vswhere.exists() {
         return None;
     }
@@ -124,11 +129,7 @@ fn vsdevcmd_path() -> Option<PathBuf> {
     }
     let mut p = PathBuf::from(s);
     p.push(r"Common7\Tools\VsDevCmd.bat");
-    if p.exists() {
-        Some(p)
-    } else {
-        None
-    }
+    if p.exists() { Some(p) } else { None }
 }
 
 #[cfg(windows)]
@@ -158,11 +159,14 @@ fn write_batch_and_run(
     let mut bat = String::new();
     bat.push_str("@echo off\r\n");
     bat.push_str("setlocal\r\n");
+    // Ensure Windows system dirs are in PATH (git-bash may strip them)
+    bat.push_str("set PATH=%SystemRoot%\\System32;%SystemRoot%;%SystemRoot%\\System32\\Wbem;%SystemRoot%\\System32\\WindowsPowerShell\\v1.0;%PATH%\r\n");
     bat.push_str(&format!("call \"{}\" -arch=x64\r\n", vs));
     if let Some(p) = prepend_path {
         let pp = win_norm(p);
         bat.push_str(&format!("set PATH={};%PATH%\r\n", pp));
     }
+    // Avoid inheriting random compilers
     bat.push_str("set CC=\r\nset CXX=\r\n");
 
     for c in commands {
@@ -184,24 +188,14 @@ fn write_batch_and_run(
     Ok(status)
 }
 
-pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Result<()> {
-    // Repo root
-    let project = PathBuf::from(path)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(path));
-    let components_dir = project.join("components");
+// === Extracted helpers ===
 
-    let cfg = normalize_config(config);
-    let preset = preset_for(cfg);
-    let build_dir = build_dir_for(&project, cfg);
-    let build_root = project.join("build");
-
-    // --clean / --cleanf (operate on the entire build/ directory)
+fn handle_clean(build_root: &Path, clean: bool, cleanf: bool) -> Result<()> {
     if clean || cleanf {
         if build_root.exists() {
             if cleanf {
                 eprintln!("Force cleaning: {}", build_root.display());
-                fs::remove_dir_all(&build_root)
+                fs::remove_dir_all(build_root)
                     .with_context(|| format!("removing {}", build_root.display()))?;
             } else {
                 eprintln!("About to remove the build directory (ALL CONFIGS):");
@@ -214,139 +208,229 @@ pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Resu
                 if io::stdin().read_line(&mut line).is_ok() {
                     let ans = line.trim().to_ascii_lowercase();
                     if ans == "y" || ans == "yes" {
-                        fs::remove_dir_all(&build_root)
+                        fs::remove_dir_all(build_root)
                             .with_context(|| format!("removing {}", build_root.display()))?;
                         eprintln!("Removed {}", build_root.display());
                     } else {
-                        eprintln!("Clean aborted; continuing without deleting.");
+                        eprintln!("Clean aborted; continuing.");
                     }
                 } else {
-                    eprintln!("(no input) Clean aborted; continuing without deleting.");
+                    eprintln!("(no input) Clean aborted; continuing.");
                 }
             }
-        } else {
-            eprintln!("Nothing to clean ({} does not exist).", build_root.display());
         }
     }
+    Ok(())
+}
 
-    // (Re)generate CMake files from triton.json every build
-    let root: TritonRoot = read_json(project.join("triton.json"))?;
-    regenerate_root_cmake(&root)?; // writes components/CMakeLists.txt
-    for (name, comp) in &root.components {
-        rewrite_component_cmake(name, &root, comp)?; // writes components/<name>/CMakeLists.txt
-    }
+fn run_cmake_configure(
+    components_dir: &Path,
+    preset: &str,
+    toolchain_path: &Path,
+    ninja_abs_dir: Option<&Path>,
+    using_ninja_on_windows: bool,
+) -> Result<()> {
+    let toolchain_arg = format!(
+        "-DCMAKE_TOOLCHAIN_FILE=\"{}\"",
+        normalize_path(toolchain_path.to_path_buf())
+    );
 
-    // Ensure components/CMakePresets.json exists (create if missing)
-    let presets_path = components_dir.join("CMakePresets.json");
-    if !presets_path.exists() {
-        let text = cmake_presets(&root.app_name, &root.generator, &root.triplet);
-        fs::write(&presets_path, text)
-            .with_context(|| format!("writing {}", presets_path.display()))?;
-    }
-
-    // Load presets to figure out generator / env
-    let (_v, map) = load_presets(&components_dir)?;
-    let mut guard = Vec::new();
-    let effective_gen = resolve_generator_for_preset(&map, preset, &mut guard)
-        .or_else(|| resolve_generator_for_preset(&map, "default", &mut guard))
-        .unwrap_or_else(|| "Ninja".to_string());
-
-    // Portable Ninja if needed (next to components/)
-    let mut ninja_abs_dir: Option<PathBuf> = None;
-    if effective_gen.eq_ignore_ascii_case("ninja") {
-        let dir = ensure_ninja_dir(&components_dir)?;
-        ninja_abs_dir = Some(dir);
-    }
-
-    // Configure if not configured for this generator
-    if !is_configured_for_generator(&build_dir, &effective_gen) {
-        fs::create_dir_all(&build_dir)?;
-        let mut configure_line = format!("cmake --preset {}", preset);
-        if let Some(dir) = &ninja_abs_dir {
-            let ninja_bin = if cfg!(windows) {
-                dir.join("ninja.exe")
-            } else {
-                dir.join("ninja")
-            };
-            configure_line.push_str(&format!(" -DCMAKE_MAKE_PROGRAM=\"{}\"", ninja_bin.display()));
-        }
-
+    if using_ninja_on_windows {
         #[cfg(windows)]
-        let using_ninja_on_windows = effective_gen.eq_ignore_ascii_case("ninja");
-        #[cfg(not(windows))]
-        let using_ninja_on_windows = false;
+        {
+            let mut configure_line = format!("cmake --preset {}", preset);
+            configure_line.push(' ');
+            configure_line.push_str(&toolchain_arg);
 
-        #[cfg(windows)]
-        if using_ninja_on_windows {
-            // Ensure MSVC cl.exe is used with Ninja
+            // Prefer MSVC `cl` when using the x64-windows triplet
             configure_line.push_str(" -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe");
-        }
 
-        let status = if using_ninja_on_windows {
+            // Add portable Ninja path and point CMake to it
+            let mut prepend: Option<PathBuf> = None;
+            if let Some(dir) = ninja_abs_dir {
+                prepend = Some(dir.to_path_buf());
+                let ninja_bin = dir.join("ninja.exe");
+                configure_line.push_str(&format!(" -DCMAKE_MAKE_PROGRAM=\"{}\"", win_norm(&ninja_bin)));
+            }
+
             let vs = vsdevcmd_path().ok_or_else(|| {
                 anyhow::anyhow!(
                     "Visual Studio Build Tools not found. Install 'Desktop development with C++' \
                      (or run in a Developer Command Prompt)."
                 )
             })?;
-            write_batch_and_run(&components_dir, &vs, ninja_abs_dir.as_deref(), &[configure_line.as_str()])?
-        } else {
-            let mut cmd = Command::new("cmake");
-            cmd.arg("--preset").arg(preset).current_dir(&components_dir);
-            if let Some(dir) = &ninja_abs_dir {
-                let existing = env::var_os("PATH").unwrap_or_default();
-                let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
-                parts.insert(0, dir.clone());
-                cmd.env("PATH", env::join_paths(parts).expect("join PATH"));
-                let ninja_bin = if cfg!(windows) {
-                    dir.join("ninja.exe")
-                } else {
-                    dir.join("ninja")
-                };
-                cmd.arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja_bin.display()));
+            let status = write_batch_and_run(
+                components_dir,
+                &vs,
+                prepend.as_deref(),
+                &[configure_line.as_str()],
+            )?;
+            if !status.success() {
+                anyhow::bail!("cmake configure failed for preset {}", preset);
             }
-            // avoid leaking CC/CXX from environment
-            cmd.env_remove("CC");
-            cmd.env_remove("CXX");
-            cmd.status().context("failed to run cmake --preset (configure)")?
-        };
+        }
+    } else {
+        // Non-Windows, or non-Ninja on Windows: run directly
+        let mut cmd = Command::new("cmake");
+        cmd.arg("--preset").arg(preset).current_dir(components_dir);
+        cmd.arg(toolchain_arg);
+        if let Some(dir) = ninja_abs_dir {
+            let existing = env::var_os("PATH").unwrap_or_default();
+            let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
+            parts.insert(0, dir.to_path_buf());
+            cmd.env("PATH", env::join_paths(parts).unwrap());
+            let ninja_bin = if cfg!(windows) {
+                dir.join("ninja.exe")
+            } else {
+                dir.join("ninja")
+            };
+            cmd.arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja_bin.display()));
+        }
+        // avoid leaking CC/CXX from environment
+        cmd.env_remove("CC");
+        cmd.env_remove("CXX");
 
+        let status = cmd.status().context("cmake configure failed")?;
         if !status.success() {
             anyhow::bail!("cmake configure failed for preset {}", preset);
         }
     }
+    Ok(())
+}
 
-    // Build
-    let status = if cfg!(windows) && effective_gen.eq_ignore_ascii_case("ninja") {
-        let vs = vsdevcmd_path().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Visual Studio Build Tools not found. Install 'Desktop development with C++' \
-                 (or run in a Developer Command Prompt)."
-            )
-        })?;
-        write_batch_and_run(
-            &components_dir,
-            &vs,
-            ninja_abs_dir.as_deref(),
-            &[&format!("cmake --build --preset={}", preset)],
-        )?
+fn run_cmake_build(
+    components_dir: &Path,
+    preset: &str,
+    ninja_abs_dir: Option<&Path>,
+    using_ninja_on_windows: bool,
+) -> Result<()> {
+    if using_ninja_on_windows {
+        #[cfg(windows)]
+        {
+            let prepend = ninja_abs_dir.map(|d| d.to_path_buf());
+            let vs = vsdevcmd_path().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Visual Studio Build Tools not found. Install 'Desktop development with C++' \
+                     (or run in a Developer Command Prompt)."
+                )
+            })?;
+            let build_line = format!("cmake --build --preset={}", preset);
+            let status = write_batch_and_run(components_dir, &vs, prepend.as_deref(), &[&build_line])?;
+            if !status.success() {
+                anyhow::bail!("build failed for preset {}", preset);
+            }
+        }
     } else {
         let mut b = Command::new("cmake");
         b.arg("--build")
             .arg(format!("--preset={}", preset))
-            .current_dir(&components_dir);
-        if let Some(dir) = &ninja_abs_dir {
+            .current_dir(components_dir);
+        if let Some(dir) = ninja_abs_dir {
             let existing = env::var_os("PATH").unwrap_or_default();
             let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
-            parts.insert(0, dir.clone());
-            b.env("PATH", env::join_paths(parts).expect("join PATH"));
+            parts.insert(0, dir.to_path_buf());
+            b.env("PATH", env::join_paths(parts).unwrap());
         }
-        b.status().context("failed to run cmake --build")?
-    };
-
-    if !status.success() {
-        anyhow::bail!("build failed for preset {}", preset);
+        let status = b.status().context("cmake build failed")?;
+        if !status.success() {
+            anyhow::bail!("build failed for preset {}", preset);
+        }
     }
+    Ok(())
+}
+
+fn run_pre_build_scripts(root: &TritonRoot, project: &Path) -> Result<()> {
+    if root.scripts.contains_key("pre_build") {
+        eprintln!("Running pre_build script...");
+        let _prev = env::current_dir();
+        env::set_current_dir(project)?;
+        crate::commands::handle_script(&["pre_build".to_string()])?;
+        if let Ok(prev) = _prev {
+            env::set_current_dir(prev)?;
+        }
+    }
+    Ok(())
+}
+
+// === Main build entrypoint ===
+pub fn handle_build(path: &str, config: &str, clean: bool, cleanf: bool) -> Result<()> {
+    let project = PathBuf::from(path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(path));
+    let components_dir = project.join("components");
+
+    let cfg = normalize_config(config);
+    let preset = preset_for(cfg);
+    let build_dir = build_dir_for(&project, cfg);
+    let build_root = project.join("build");
+
+    handle_clean(&build_root, clean, cleanf)?;
+
+    let (vcpkg_toolchain, vcpkg_exe) = ensure_vcpkg(&project)?;
+    let root: TritonRoot = read_json(project.join("triton.json"))?;
+    handle_install(&root, &project, &vcpkg_exe)?;
+
+    let cmake_ver = effective_cmake_version();
+    let existing: Vec<String> = root
+        .components
+        .keys()
+        .filter(|name| components_dir.join(*name).is_dir())
+        .cloned()
+        .collect();
+
+    let mut root_filtered = root.clone();
+    root_filtered
+        .components
+        .retain(|name, _| existing.iter().any(|n| n == name));
+
+    regenerate_root_cmake(&root_filtered)?;
+    for name in existing {
+        if let Some(comp) = root.components.get(&name) {
+            rewrite_component_cmake(&name, &root, comp, cmake_ver)?;
+        }
+    }
+
+    let presets_path = components_dir.join("CMakePresets.json");
+    if !presets_path.exists() {
+        let text = cmake_presets(&root.app_name, &root.generator, &detect_vcpkg_triplet(), cmake_ver);
+        fs::write(&presets_path, text)?;
+    }
+
+    let (_v, map) = load_presets(&components_dir)?;
+    let mut guard = Vec::new();
+    let effective_gen = resolve_generator_for_preset(&map, preset, &mut guard)
+        .or_else(|| resolve_generator_for_preset(&map, "default", &mut guard))
+        .unwrap_or_else(|| "Ninja".to_string());
+
+    let mut ninja_abs_dir: Option<PathBuf> = None;
+    if effective_gen.eq_ignore_ascii_case("ninja") {
+        ninja_abs_dir = Some(ensure_ninja_dir(&components_dir)?);
+    }
+
+    #[cfg(windows)]
+    let using_ninja_on_windows = effective_gen.eq_ignore_ascii_case("ninja");
+    #[cfg(not(windows))]
+    let using_ninja_on_windows = false;
+
+    if !is_configured_for_generator(&build_dir, &effective_gen) {
+        fs::create_dir_all(&build_dir)?;
+        run_cmake_configure(
+            &components_dir,
+            preset,
+            Path::new(&vcpkg_toolchain),
+            ninja_abs_dir.as_deref(),
+            using_ninja_on_windows,
+        )?;
+    }
+
+    run_pre_build_scripts(&root, &project)?;
+
+    run_cmake_build(
+        &components_dir,
+        preset,
+        ninja_abs_dir.as_deref(),
+        using_ninja_on_windows,
+    )?;
 
     eprintln!("Built at {}", build_dir.display());
     Ok(())

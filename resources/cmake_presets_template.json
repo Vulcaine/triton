@@ -1,6 +1,10 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": "{{CMAKE_MAJOR}}",
+    "minor": "{{CMAKE_MINOR}}",
+    "patch": "{{CMAKE_PATCH}}"
+  },
   "configurePresets": [
     {
       "name": "debug",

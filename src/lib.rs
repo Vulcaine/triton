@@ -11,9 +11,28 @@ pub mod commands {
     pub mod remove;
     pub mod script;
     pub mod add;
+    pub mod testcmd;
+    pub mod generate;
+    pub mod install;
+    pub mod find_target;
+    pub mod unlink;
+    pub mod remove_component;
 
     pub use add::handle_add;
+    pub use build::handle_build;
+    pub use init::handle_init;
+    pub use generate::handle_generate;
     pub use link::handle_link;
+    pub use remove::handle_remove;
+    pub use script::handle_script;
+    pub use testcmd::handle_test;
+    pub use install::handle_install;
+    pub use find_target::handle_find_target;
+    pub use unlink::handle_unlink;
+    pub use remove_component::handle_remove_component;
 }
 
-pub use crate::commands::link::handle_link;
+pub use commands::{
+    handle_add, handle_build, handle_init, handle_link, handle_remove,
+    handle_remove_component, handle_script, handle_test, handle_install, handle_unlink,
+};

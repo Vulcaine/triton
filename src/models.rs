@@ -4,22 +4,44 @@ use std::collections::{BTreeMap, HashMap};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TritonRoot {
     pub app_name: String,
-    pub triplet: String,
     pub generator: String,
     pub cxx_std: String,
-    pub deps: Vec<RootDep>,
+
+    /// Top-level dependencies (vcpkg or git). Supports both simple and detailed forms.
+    pub deps: Vec<DepSpec>,
+
     pub components: BTreeMap<String, TritonComponent>,
+
     #[serde(default)]
     pub scripts: HashMap<String, String>,
 }
 
+/// Dependency specification (hybrid form).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum RootDep {
-    Name(String),
+pub enum DepSpec {
+    /// Simple string form: `"lua"`
+    Simple(String),
+
+    /// Git dependency (structured)
     Git(GitDep),
+
+    /// Detailed form with filters
+    Detailed(DepDetailed),
 }
 
+impl DepSpec {
+    /// Return the canonical name of this dependency.
+    pub fn name(&self) -> &str {
+        match self {
+            DepSpec::Simple(n) => n,
+            DepSpec::Git(g) => &g.name,
+            DepSpec::Detailed(d) => &d.name,
+        }
+    }
+}
+
+/// Git repository dependency
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitDep {
     pub repo: String,
@@ -43,6 +65,24 @@ impl Default for GitDep {
     }
 }
 
+/// More detailed dep form (with filters).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DepDetailed {
+    pub name: String,
+    /// Restrict to operating systems (values: "windows", "linux", "macos")
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub os: Vec<String>,
+    /// Override vcpkg package name (if different from `name`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// Restrict to vcpkg triplets
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triplet: Vec<String>,
+    /// Additional vcpkg features
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+}
+
 /// Support either a structured cache entry or a raw `VAR=VAL`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -59,20 +99,57 @@ pub struct CMakeCacheEntry {
     #[serde(default = "default_cache_type")]
     pub typ: String,
 }
-fn default_cache_type() -> String { "STRING".into() }
+fn default_cache_type() -> String {
+    "STRING".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TritonComponent {
     pub kind: String, // "exe" | "lib"
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link: Vec<LinkEntry>,
-    /// Preprocessor defs applied to this component (e.g. "GLM_ENABLE_EXPERIMENTAL").
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub defines: Vec<String>,
-    /// Names of deps (as they appear in this component's `link`) to **re-export** PUBLICly.
-    /// Any component that depends on this one will inherit these usage requirements.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<String>,
+    #[serde(default, skip_serializing_if = "LinkOptions::is_none")]
+    pub link_options: LinkOptions,
+    #[serde(default, skip_serializing_if = "VendorLibs::is_none")]
+    pub vendor_libs: VendorLibs,
+    /// Asset paths (relative to the component root) to stage next to the target
+    /// incrementally.  Directories are mirrored; files are copied if changed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<String>,
+}
+
+/// Linker options — either a flat list (all platforms) or a map keyed by "linux"/"macos"/"windows".
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(untagged)]
+pub enum LinkOptions {
+    #[default]
+    None,
+    All(Vec<String>),
+    PerPlatform(BTreeMap<String, Vec<String>>),
+}
+
+impl LinkOptions {
+    pub fn is_none(&self) -> bool { matches!(self, LinkOptions::None) }
+}
+
+/// Vendor library paths — either a flat list (all platforms) or a map keyed by "linux"/"macos"/"windows".
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(untagged)]
+pub enum VendorLibs {
+    #[default]
+    None,
+    All(Vec<String>),
+    PerPlatform(BTreeMap<String, Vec<String>>),
+}
+
+impl VendorLibs {
+    pub fn is_none(&self) -> bool { matches!(self, VendorLibs::None) }
 }
 
 /// Allow three forms inside `components.<name>.link`:
@@ -85,12 +162,11 @@ pub enum LinkEntry {
     Name(String),
     Named {
         name: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         package: Option<String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         targets: Option<Vec<String>>,
     },
-    // Kept for backwards compatibility if you ever used a map form earlier
     Map(BTreeMap<String, LinkHint>),
 }
 
@@ -103,12 +179,11 @@ pub struct LinkHint {
 }
 
 impl LinkEntry {
-    /// Canonicalize into (name, package_hint, first_target_hint)
+    /// Canonicalize into (name, package_hint)
     pub fn normalize(&self) -> (String, Option<String>) {
         match self {
             LinkEntry::Name(n) => (n.clone(), None),
-            LinkEntry::Named { name, package, .. } =>
-                (name.clone(), package.clone()),
+            LinkEntry::Named { name, package, .. } => (name.clone(), package.clone()),
             LinkEntry::Map(map) => {
                 if let Some((k, v)) = map.iter().next() {
                     (k.clone(), v.package.clone())
@@ -122,18 +197,10 @@ impl LinkEntry {
     /// Return all explicit targets if provided (for multi-target git/vcpkg entries).
     pub fn all_targets(&self) -> Vec<String> {
         match self {
-            LinkEntry::Named { targets, .. } => {
-                if let Some(ts) = targets {
-                    ts.clone()
-                } else {
-                    vec![]
-                }
-            }
+            LinkEntry::Named { targets, .. } => targets.clone().unwrap_or_default(),
             LinkEntry::Map(map) => {
                 if let Some((_k, v)) = map.iter().next() {
-                    if let Some(ts) = &v.targets {
-                        return ts.clone();
-                    }
+                    return v.targets.clone().unwrap_or_default();
                 }
                 vec![]
             }

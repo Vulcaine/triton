@@ -119,6 +119,14 @@ fn download_portable_ninja(project: &Path) -> Result<PathBuf> {
         let zip_ps = win_normalize_path_for_ps(&zip_path).replace('\\', "\\\\");
         let dst_ps = win_normalize_path_for_ps(&tools_abs).replace('\\', "\\\\");
 
+        // Try PowerShell first (ensure system PATH includes Windows dirs)
+        let mut path = env::var("PATH").unwrap_or_default();
+        let sys_root = env::var("SystemRoot").unwrap_or_else(|_| "C:\\WINDOWS".into());
+        let ps_dir = format!("{}\\System32\\WindowsPowerShell\\v1.0", sys_root);
+        if !path.contains(&ps_dir) {
+            path = format!("{};{}\\System32;{}", path, sys_root, ps_dir);
+        }
+
         let ps = format!(
             r#"
 $ProgressPreference = 'SilentlyContinue';
@@ -134,6 +142,7 @@ Expand-Archive -Path '{zip}' -DestinationPath '{dst}' -Force;
             .arg("-NoProfile")
             .arg("-Command")
             .arg(ps)
+            .env("PATH", &path)
             .status()
             .context("failed to run PowerShell to fetch Ninja")?;
         if !status.success() {

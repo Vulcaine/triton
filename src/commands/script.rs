@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashMap;
 use std::env;
-use std::path::{Path};
+use std::path::Path;
 use std::process::Command;
 
 use crate::models::TritonRoot;
@@ -10,7 +10,7 @@ use crate::util;
 #[cfg(windows)]
 fn is_shelly(s: &str) -> bool {
     // cmd operators that require running through `cmd.exe /C`
-    let ops = ["&&", "||", "|", ">", "<", "&", "(" , ")", "%"];
+    let ops = ["&&", "||", "|", ">", "<", "&", "(", ")", "%"];
     ops.iter().any(|op| s.contains(op))
 }
 
@@ -27,7 +27,11 @@ fn shell_escape(arg: &str) -> String {
     if arg.is_empty() || arg.contains(char::is_whitespace) || arg.contains('"') {
         let mut out = String::from("\"");
         for ch in arg.chars() {
-            if ch == '"' { out.push_str(r#"\""#); } else { out.push(ch); }
+            if ch == '"' {
+                out.push_str(r#"\""#);
+            } else {
+                out.push(ch);
+            }
         }
         out.push('"');
         out
@@ -55,6 +59,61 @@ fn looks_like_path(s: &str) -> bool {
     s.contains('/') || s.contains('\\') || s.ends_with(".exe") || s.ends_with(".cmd") || s.ends_with(".bat") || s.ends_with(".ps1")
 }
 
+/// Split a script string into (program, arguments).
+/// The first whitespace-delimited token is the program; the rest are arguments.
+/// This handles simple commands like `dotnet build path/to/project`.
+fn split_command(script: &str) -> (&str, Vec<&str>) {
+    let trimmed = script.trim();
+    let mut parts = trimmed.split_whitespace();
+    let program = parts.next().unwrap_or(trimmed);
+    let script_args: Vec<&str> = parts.collect();
+    (program, script_args)
+}
+
+/// Execute a command and check that it exits successfully.
+/// On failure, report the script name and a human-readable context string.
+fn execute_and_check(cmd: &mut Command, script_name: &str, context: &str) -> Result<()> {
+    let status = cmd
+        .status()
+        .with_context(|| format!("Failed to {} for script {}", context, script_name))?;
+    if !status.success() {
+        bail!(
+            "Script \"{}\" exited with exit code: {}",
+            script_name,
+            status.code().unwrap_or(-1)
+        );
+    }
+    Ok(())
+}
+
+/// Detect leading "bash ..." or "sh ..." and return (interpreter, rest).
+fn detect_shell_invocation(s: &str) -> Option<(&'static str, &str)> {
+    let s = s.trim_start();
+    let bytes = s.as_bytes();
+
+    if s.len() >= 4 && s[..4].eq_ignore_ascii_case("bash") {
+        let mut i = 4;
+        while i < s.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        return Some(("bash", &s[i..]));
+    }
+
+    if s.len() >= 2 && s[..2].eq_ignore_ascii_case("sh") {
+        let mut i = 2;
+        while i < s.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        return Some(("sh", &s[i..]));
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Windows-specific helpers
+// ---------------------------------------------------------------------------
+
 #[cfg(windows)]
 fn normalize_windows_path(root_dir: &Path, s: &str) -> String {
     // Handle leading ./ or .\ and normalize to absolute path
@@ -67,6 +126,383 @@ fn normalize_windows_path(root_dir: &Path, s: &str) -> String {
     };
     fixed
 }
+
+/// Convert a single POSIX-style PATH entry (e.g. `/c/Program Files/dotnet`)
+/// to its Windows equivalent (`C:\Program Files\dotnet`).
+/// Returns the original string unchanged if it doesn't look like a MinGW path.
+#[cfg(windows)]
+fn posix_to_win_path_entry(entry: &str) -> String {
+    let bytes = entry.as_bytes();
+    // MinGW/Git Bash uses `/c/...` for `C:\...`
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[2] == b'/' {
+        let drive = bytes[1].to_ascii_uppercase() as char;
+        if drive.is_ascii_alphabetic() {
+            return format!("{}:{}", drive, entry[2..].replace('/', r"\"));
+        }
+    }
+    // Handle bare `/c` (drive root without trailing slash)
+    if bytes.len() == 2 && bytes[0] == b'/' {
+        let drive = bytes[1].to_ascii_uppercase() as char;
+        if drive.is_ascii_alphabetic() {
+            return format!("{}:\\", drive);
+        }
+    }
+    entry.to_string()
+}
+
+/// Split a hybrid PATH (mix of `;`-separated Windows entries and `:`-separated
+/// POSIX entries from MinGW/Git Bash) into individual entries.
+///
+/// The tricky part: `:` is both a POSIX path separator AND part of Windows
+/// drive letters (e.g. `C:\foo`). Strategy:
+/// 1. Split on `;` first (always a separator)
+/// 2. For each fragment, if it contains `:` that looks like POSIX separators
+///    (not `X:\ ` drive-letter patterns), split those too.
+#[cfg(windows)]
+fn split_hybrid_path(path: &str) -> Vec<&str> {
+    let mut entries = Vec::new();
+    for fragment in path.split(';') {
+        if fragment.is_empty() {
+            continue;
+        }
+        // If fragment starts with a drive letter like `C:\`, it's a single Windows path
+        let bytes = fragment.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/')
+        {
+            entries.push(fragment);
+            continue;
+        }
+        // Otherwise split on `:` (POSIX separator)
+        for part in fragment.split(':') {
+            if !part.is_empty() {
+                entries.push(part);
+            }
+        }
+    }
+    entries
+}
+
+/// Normalize the PATH environment variable so that POSIX-style entries
+/// (from MinGW/Git Bash) are converted to Windows format.
+/// This is needed when spawning `cmd.exe` from a bash-launched Rust process,
+/// because cmd.exe cannot resolve `/c/Program Files/dotnet` style paths.
+#[cfg(windows)]
+fn normalize_path_for_cmd() -> String {
+    let path = env::var("PATH").unwrap_or_default();
+    split_hybrid_path(&path)
+        .into_iter()
+        .map(|e| posix_to_win_path_entry(e))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+#[cfg(windows)]
+fn path_join_has_exe(dir: &str, exe: &str) -> Option<String> {
+    use std::path::PathBuf;
+    let mut p = PathBuf::from(dir);
+    p.push(exe);
+    if p.is_file() {
+        return Some(p.to_string_lossy().to_string());
+    }
+    None
+}
+
+#[cfg(windows)]
+fn find_in_path_excluding_system32(name: &str) -> Option<String> {
+    // Search PATH for name (e.g., "bash.exe"), but skip the WSL shim in System32.
+    let wanted = name.to_ascii_lowercase();
+    if let Some(path) = env::var_os("PATH") {
+        for dir in env::split_paths(&path) {
+            let mut cand = dir.clone();
+            cand.push(&wanted);
+            let s = cand.to_string_lossy().to_string();
+            if cand.is_file() {
+                // Skip the legacy WSL shim
+                let s_lower = s.to_ascii_lowercase();
+                if s_lower.contains("\\windows\\system32\\bash.exe") {
+                    continue;
+                }
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn find_shell_interpreter_on_windows(name: &str) -> Option<String> {
+    // 1) Respect explicit override
+    if let Ok(custom) = env::var("TRITON_BASH") {
+        let p = custom.trim_matches('"').trim();
+        if !p.is_empty() && Path::new(p).is_file() {
+            return Some(p.to_string());
+        }
+    }
+
+    let exe = format!("{name}.exe");
+
+    // 2) PATH search, but skip System32\bash.exe (WSL shim)
+    if let Some(p) = find_in_path_excluding_system32(&exe) {
+        return Some(p);
+    }
+
+    // 3) Well-known installs
+    let mut candidates: Vec<String> = Vec::new();
+
+    // ProgramFiles variants
+    for pf in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(root) = env::var(pf) {
+            // Git for Windows
+            candidates.extend(
+                [
+                    "\\Git\\bin\\bash.exe",
+                    "\\Git\\usr\\bin\\bash.exe",
+                    "\\Git\\bin\\sh.exe",
+                    "\\Git\\usr\\bin\\sh.exe",
+                ]
+                .iter()
+                .filter_map(|suf| path_join_has_exe(&root, suf)),
+            );
+        }
+    }
+
+    // MSYS2 / Cygwin common defaults
+    for root in [
+        "C:\\msys64\\usr\\bin",
+        "C:\\msys32\\usr\\bin",
+        "C:\\cygwin64\\bin",
+        "C:\\cygwin\\bin",
+    ] {
+        if let Some(p) = path_join_has_exe(root, &exe) {
+            candidates.push(p);
+        }
+    }
+
+    // If they asked for "sh", also accept bash.exe from the same locations.
+    if name.eq_ignore_ascii_case("sh") {
+        for root in [
+            "C:\\msys64\\usr\\bin",
+            "C:\\msys32\\usr\\bin",
+            "C:\\cygwin64\\bin",
+            "C:\\cygwin\\bin",
+        ] {
+            if let Some(p) = path_join_has_exe(root, "bash.exe") {
+                candidates.push(p);
+            }
+        }
+        for pf in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Ok(root) = env::var(pf) {
+                if let Some(p) = path_join_has_exe(&root, "\\Git\\usr\\bin\\bash.exe") {
+                    candidates.push(p);
+                }
+                if let Some(p) = path_join_has_exe(&root, "\\Git\\bin\\bash.exe") {
+                    candidates.push(p);
+                }
+            }
+        }
+    }
+
+    candidates.into_iter().find(|p| Path::new(p).is_file())
+}
+
+// ---------------------------------------------------------------------------
+// Windows execution sub-functions
+// ---------------------------------------------------------------------------
+
+/// Handle scripts prefixed with "bash" or "sh" on Windows by resolving a
+/// real MinGW/MSYS/Cygwin/Git Bash interpreter (not the WSL shim).
+#[cfg(windows)]
+fn execute_via_shell_interpreter(
+    script: &str,
+    args: &[&str],
+    cwd: &Path,
+    script_name: &str,
+) -> Result<()> {
+    let (interp, rest_raw) = detect_shell_invocation(script).unwrap();
+
+    // Resolve an actual MinGW/MSYS/Cygwin/Git Bash interpreter.
+    let resolved = find_shell_interpreter_on_windows(interp).ok_or_else(|| {
+        anyhow!(
+            "Could not find a usable '{}' on Windows.\n\
+             Install Git for Windows or MSYS2 and ensure their bash/sh is on PATH,\n\
+             or set TRITON_BASH to the full path of bash.exe.",
+            interp
+        )
+    })?;
+
+    // Normalize path for POSIX shell:
+    //   - convert backslashes to forward slashes
+    //   - ensure relative paths start with "./"
+    let mut rest = rest_raw.trim();
+    if let Some(r) = rest.strip_prefix(".\\") {
+        rest = r;
+    }
+    let mut arg0 = rest.replace('\\', "/");
+    if !(arg0.starts_with("./") || arg0.starts_with('/')) {
+        arg0 = format!("./{}", arg0);
+    }
+
+    execute_and_check(
+        Command::new(&resolved)
+            .arg(&arg0)
+            .args(args)
+            .current_dir(cwd),
+        script_name,
+        &format!("spawn {} {}", resolved, &arg0),
+    )
+}
+
+/// Handle scripts containing shell operators on Windows via `cmd.exe /C`.
+#[cfg(windows)]
+fn execute_via_cmd(
+    script: &str,
+    args: &[&str],
+    cwd: &Path,
+    script_name: &str,
+) -> Result<()> {
+    let mut merged = script.to_string();
+    for a in args {
+        merged.push(' ');
+        merged.push_str(&shell_escape(a));
+    }
+
+    execute_and_check(
+        Command::new("cmd")
+            .arg("/C")
+            .arg(&merged)
+            .current_dir(cwd)
+            .env("PATH", normalize_path_for_cmd()),
+        script_name,
+        "launch cmd.exe",
+    )
+}
+
+/// Handle direct program execution on Windows (no shell operators, no bash prefix).
+#[cfg(windows)]
+fn execute_direct_windows(
+    script: &str,
+    args: &[&str],
+    cwd: &Path,
+    script_name: &str,
+) -> Result<()> {
+    let (program, script_args) = split_command(script);
+
+    // If the program looks like a path, normalize it; .cmd/.bat go through cmd.exe
+    if looks_like_path(program) {
+        let normalized = normalize_windows_path(cwd, program);
+        if normalized.ends_with(".cmd") || normalized.ends_with(".bat") {
+            // .cmd/.bat must go through cmd.exe
+            let mut merged = normalized;
+            for a in &script_args {
+                merged.push(' ');
+                merged.push_str(&shell_escape(a));
+            }
+            for a in args {
+                merged.push(' ');
+                merged.push_str(&shell_escape(a));
+            }
+            return execute_and_check(
+                Command::new("cmd")
+                    .arg("/C")
+                    .arg(&merged)
+                    .current_dir(cwd)
+                    .env("PATH", normalize_path_for_cmd()),
+                script_name,
+                "launch cmd.exe",
+            );
+        }
+
+        return execute_and_check(
+            Command::new(&normalized)
+                .args(&script_args)
+                .args(args)
+                .current_dir(cwd),
+            script_name,
+            &format!("spawn {}", normalized),
+        );
+    }
+
+    execute_and_check(
+        Command::new(program)
+            .args(&script_args)
+            .args(args)
+            .current_dir(cwd),
+        script_name,
+        &format!("spawn {}", program),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Unix execution sub-functions
+// ---------------------------------------------------------------------------
+
+/// Handle scripts containing shell operators on Unix via `sh -c`.
+#[cfg(not(windows))]
+fn execute_via_sh(
+    script: &str,
+    args: &[&str],
+    cwd: &Path,
+    script_name: &str,
+) -> Result<()> {
+    let mut merged = script.to_string();
+    for a in args {
+        merged.push(' ');
+        merged.push_str(&shell_escape(a));
+    }
+    execute_and_check(
+        Command::new("sh")
+            .arg("-c")
+            .arg(merged)
+            .current_dir(cwd),
+        script_name,
+        "launch sh",
+    )
+}
+
+/// Handle direct/PATH-based execution on Unix.
+#[cfg(not(windows))]
+fn execute_direct_unix(
+    script: &str,
+    args: &[&str],
+    cwd: &Path,
+    script_name: &str,
+) -> Result<()> {
+    let (program, script_args) = split_command(script);
+
+    // Path-like: resolve ./ and run directly, else fall back to PATH
+    let prog = if let Some(rest) = program.strip_prefix("./") {
+        cwd.join(rest)
+    } else {
+        cwd.join(program)
+    };
+
+    if prog.exists() {
+        execute_and_check(
+            Command::new(&prog)
+                .args(&script_args)
+                .args(args)
+                .current_dir(cwd),
+            script_name,
+            &format!("spawn {}", prog.display()),
+        )
+    } else {
+        execute_and_check(
+            Command::new(program)
+                .args(&script_args)
+                .args(args)
+                .current_dir(cwd),
+            script_name,
+            &format!("spawn {}", program),
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main entry point
+// ---------------------------------------------------------------------------
 
 pub fn handle_script(tokens: &[String]) -> Result<()> {
     if tokens.is_empty() {
@@ -84,105 +520,32 @@ pub fn handle_script(tokens: &[String]) -> Result<()> {
         .ok_or_else(|| anyhow!("Unknown script: {}", script_name))?;
     let script: &str = raw.as_str();
 
-    // Decide execution strategy
     #[cfg(windows)]
     {
-        let mut use_cmd_shell = is_shelly(script);
-        let cmdline_owned: Option<String>;
-
-        // If it looks like a path (and especially for .cmd/.bat), normalize to absolute
-        let mut prog = script.to_string();
-        if looks_like_path(&prog) {
-            prog = normalize_windows_path(&cwd, &prog);
-            // .cmd / .bat must go through cmd.exe /C
-            if prog.ends_with(".cmd") || prog.ends_with(".bat") {
-                use_cmd_shell = true;
-            }
+        if detect_shell_invocation(script).is_some() {
+            return execute_via_shell_interpreter(script, args, &cwd, script_name);
         }
-
-        if use_cmd_shell {
-            // Build single /C string: "<prog> <args...>"
-            let mut merged = prog.clone();
-            for a in args {
-                merged.push(' ');
-                merged.push_str(&shell_escape(a));
-            }
-            cmdline_owned = Some(merged);
-
-            let status = Command::new("cmd")
-                .arg("/C")
-                .arg(cmdline_owned.as_ref().unwrap())
-                .current_dir(&cwd)
-                .status()
-                .with_context(|| format!("Failed to launch cmd.exe for script {}", script_name))?;
-
-            if !status.success() {
-                bail!("Script \"{}\" exited with exit code: {}", script_name, status.code().unwrap_or(-1));
-            }
-            return Ok(());
-        } else {
-            // Direct exec (e.g. .exe)
-            let status = Command::new(&prog)
-                .args(args)
-                .current_dir(&cwd)
-                .status()
-                .with_context(|| format!("Failed to spawn {}", prog))?;
-            if !status.success() {
-                bail!("Script \"{}\" exited with exit code: {}", script_name, status.code().unwrap_or(-1));
-            }
-            return Ok(());
+        if is_shelly(script) {
+            return execute_via_cmd(script, args, &cwd, script_name);
         }
+        return execute_direct_windows(script, args, &cwd, script_name);
     }
 
     #[cfg(not(windows))]
     {
-        // Unix: shell line vs direct path
+        if let Some((interp, rest)) = detect_shell_invocation(script) {
+            return execute_and_check(
+                Command::new(interp)
+                    .arg(rest)
+                    .args(args)
+                    .current_dir(&cwd),
+                script_name,
+                &format!("spawn {} {}", interp, rest),
+            );
+        }
         if is_shelly(script) && !looks_like_path(script) {
-            // plain shell line → sh -c "script args..."
-            let mut merged = script.to_string();
-            for a in args {
-                merged.push(' ');
-                merged.push_str(&shell_escape(a));
-            }
-            let status = Command::new("sh")
-                .arg("-c")
-                .arg(merged)
-                .current_dir(&cwd)
-                .status()
-                .with_context(|| format!("Failed to launch sh for script {}", script_name))?;
-            if !status.success() {
-                bail!("Script \"{}\" exited with exit code: {}", script_name, status.code().unwrap_or(-1));
-            }
-            return Ok(());
+            return execute_via_sh(script, args, &cwd, script_name);
         }
-
-        // Path-like: resolve ./ and run directly
-        let prog = if let Some(rest) = script.strip_prefix("./") {
-            cwd.join(rest)
-        } else {
-            cwd.join(script)
-        };
-        if !prog.exists() {
-            // Fall back to PATH
-            let status = Command::new(script)
-                .args(args)
-                .current_dir(&cwd)
-                .status()
-                .with_context(|| format!("Failed to spawn {}", script))?;
-            if !status.success() {
-                bail!("Script \"{}\" exited with exit code: {}", script_name, status.code().unwrap_or(-1));
-            }
-            return Ok(());
-        }
-        // ensure executable bit? (tests set it)
-        let status = Command::new(&prog)
-            .args(args)
-            .current_dir(&cwd)
-            .status()
-            .with_context(|| format!("Failed to spawn {}", prog.display()))?;
-        if !status.success() {
-            bail!("Script \"{}\" exited with exit code: {}", script_name, status.code().unwrap_or(-1));
-        }
-        Ok(())
+        return execute_direct_unix(script, args, &cwd, script_name);
     }
 }

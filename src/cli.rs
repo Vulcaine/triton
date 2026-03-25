@@ -1,3 +1,5 @@
+// cli.rs
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -15,9 +17,6 @@ pub enum Commands {
     Init {
         /// Project name (or '.' for minimal init in current folder)
         name: Option<String>,
-        /// vcpkg triplet
-        #[arg(long, default_value = "x64-windows")]
-        triplet: String,
         /// CMake generator
         #[arg(long, default_value = "Ninja")]
         generator: String,
@@ -33,10 +32,7 @@ pub enum Commands {
     ///   triton add lua->demo sol2->demo
     ///   triton add lua sol2 demo   # if 'demo' is an existing component, link both to it
     Add {
-        /// One or more items. Each item may be:
-        /// - "pkg" (vcpkg), "org/repo[@branch]" (git), or "pkg->component" (link sugar).
         items: Vec<String>,
-
         #[arg(long)]
         features: Option<String>,
         #[arg(long)]
@@ -45,18 +41,23 @@ pub enum Commands {
 
     /// Link component A to component B (target_link_libraries(A PRIVATE B))
     Link {
-        /// Either `A B` or `A:B`. If two args are provided, both are used.
+        edge: String,
+        to: Option<String>,
+    },
+
+    /// Unlink A from B (remove the dependency edge).
+    ///
+    /// Examples:
+    ///   triton unlink sdl2:Game     — Game no longer depends on sdl2
+    ///   triton unlink sdl2          — remove sdl2 from ALL components' link lists
+    Unlink {
         edge: String,
         to: Option<String>,
     },
 
     /// Remove a package or unlink it from a specific component
-    ///
-    /// - `triton remove <pkg>`: remove from project deps and unlink from all components.
-    /// - `triton remove <pkg> --component X`: only unlink from component X (keep dep).
     Remove {
         pkg: String,
-        /// If provided, only unlink the pkg from this component.
         #[arg(long)]
         component: Option<String>,
         #[arg(long)]
@@ -68,23 +69,19 @@ pub enum Commands {
     /// Re-generate managed CMake blocks
     Generate,
 
-     /// Build
+    /// Build the project
     Build {
-        /// Project root path (defaults to current dir)
         #[arg(default_value = ".")]
         path: String,
-        /// Configuration preset (debug|release)
         #[arg(long, default_value = "debug")]
         config: String,
-        /// Interactively confirm cleaning build/<config> before building
         #[arg(long, conflicts_with = "cleanf")]
         clean: bool,
-        /// Force clean build/<config> without prompting
         #[arg(long)]
         cleanf: bool,
     },
 
-    /// Run
+    /// Run a component (usually an executable target)
     Run {
         path: String,
         #[arg(long)]
@@ -95,7 +92,52 @@ pub enum Commands {
         args: Vec<String>,
     },
 
+    /// Run tests via CTest
+    Test {
+        #[arg(default_value = ".")]
+        path: String,
+        #[arg(long, default_value = "debug")]
+        config: String,
+    },
+
+    /// Manage cmake (installation helpers)
+    Cmake {
+        #[command(subcommand)]
+        cmd: CmakeCommands,
+    },
+
+    /// Remove a component entirely (deletes from triton.json, unlinks from
+    /// all dependents, removes the on-disk directory, and regenerates CMake).
+    RemoveComponent {
+        /// Component name to remove
+        name: String,
+    },
+
+    /// Search for the CMake package name of an installed vcpkg dependency.
+    ///
+    /// Scans vcpkg_installed/<triplet>/share/ for matching Config.cmake files.
+    FindTarget {
+        /// The dependency name to search for (e.g. "openal-soft", "directxtex")
+        dep: String,
+    },
+
     /// Any unknown subcommand is treated as a script name + args.
     #[command(external_subcommand)]
     Script(Vec<String>),
+}
+
+#[derive(Subcommand)]
+pub enum CmakeCommands {
+    /// Ensure cmake >= <version> is installed (tries package managers cross-platform)
+    ///
+    /// Usage:
+    ///   triton cmake install --version 3.30.1
+    ///
+    /// If --version is omitted, Triton uses the project's required version.
+    Install {
+        /// Minimum CMake version to ensure (e.g. "3.30.1").
+        /// If omitted, uses the version from `effective_cmake_version()`.
+        #[arg(long)]
+        version: Option<String>,
+    },
 }

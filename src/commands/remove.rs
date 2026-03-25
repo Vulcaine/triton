@@ -2,77 +2,76 @@ use anyhow::Result;
 use std::fs;
 use std::path::Path;
 
-use crate::cmake::{regenerate_root_cmake, rewrite_component_cmake};
-use crate::models::{RootDep, TritonRoot};
+use crate::cmake::{
+    effective_cmake_version, regenerate_root_cmake, rewrite_component_cmake
+};
+use crate::models::{DepSpec, TritonRoot};
 use crate::util::{read_json, write_json_pretty_changed, write_text_if_changed};
 
-pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&str>, _host: bool) -> Result<()> {
+pub fn handle_remove(
+    pkg: &str,
+    component_opt: Option<&str>,
+    _features: Option<&str>,
+    _host: bool,
+) -> Result<()> {
     let mut root: TritonRoot = read_json("triton.json")?;
+    let cmake_ver = effective_cmake_version();
 
     // If a component is specified, only unlink from that component.
     if let Some(comp_name) = component_opt {
-        // Resolve `pkg` to canonical dep name if user passed a git repo string.
-        let canonical = root.deps.iter().find_map(|d| {
-            if let RootDep::Git(g) = d {
-                if g.name == pkg || g.repo == pkg {
-                    return Some(g.name.clone());
-                }
-            }
-            None
-        }).unwrap_or_else(|| pkg.to_string());
+        let comp = root
+            .components
+            .get_mut(comp_name)
+            .ok_or_else(|| anyhow::anyhow!("No such component '{}'", comp_name))?;
 
-        {
-            let comp = root
-                .components
-                .get_mut(comp_name)
-                .ok_or_else(|| anyhow::anyhow!("No such component '{}'", comp_name))?;
-
-            comp.link.retain(|e| {
-                let (name, _) = e.normalize();
-                // remove if matches canonical (case-insensitive)
-                !name.eq_ignore_ascii_case(&canonical)
-            });
-        }
+        comp.link.retain(|e| {
+            let (name, _) = e.normalize();
+            !name.eq_ignore_ascii_case(pkg)
+        });
 
         write_json_pretty_changed("triton.json", &root)?;
 
-        // Important: rewrite ALL component CMake files so they exist (idempotent),
-        // not just the target component, since tests expect B/CMakeLists.txt too.
         for (name, comp) in &root.components {
-            rewrite_component_cmake(name, &root, comp)?;
+            rewrite_component_cmake(name, &root, comp, cmake_ver)?;
         }
-        regenerate_root_cmake(&root)?;
+        regenerate_root_cmake(&root)?; 
 
         eprintln!("Unlinked '{}' from component '{}'.", pkg, comp_name);
         return Ok(());
     }
 
-    // Global remove: drop from root.deps (by vcpkg name or git name/repo).
-    let mut removed_git_name: Option<String> = None;
+    // Global remove
     root.deps.retain(|d| match d {
-        RootDep::Name(n) => n != pkg,
-        RootDep::Git(g) => {
-            let hit = g.name == pkg || g.repo == pkg;
-            if hit {
-                removed_git_name = Some(g.name.clone());
-            }
-            !hit
-        }
+        DepSpec::Simple(n) => !n.eq_ignore_ascii_case(pkg),
+        DepSpec::Git(g) => !(g.name.eq_ignore_ascii_case(pkg) || g.repo.eq_ignore_ascii_case(pkg)),
+        DepSpec::Detailed(d) => !d.name.eq_ignore_ascii_case(pkg),
     });
 
-    // Unlink from all components (match either given pkg or the git canonical name).
     for c in root.components.values_mut() {
         c.link.retain(|e| {
             let (name, _) = e.normalize();
-            name != pkg && Some(name.as_str()) != removed_git_name.as_deref()
+            !name.eq_ignore_ascii_case(pkg)
         });
     }
 
-    // Sync vcpkg.json to remaining vcpkg deps
-    let remaining: Vec<String> = root
+    // Sync vcpkg.json with remaining deps (preserving features)
+    let remaining: Vec<serde_json::Value> = root
         .deps
         .iter()
-        .filter_map(|d| if let RootDep::Name(n) = d { Some(n.clone()) } else { None })
+        .filter_map(|d| match d {
+            DepSpec::Simple(n) => Some(serde_json::json!(n)),
+            DepSpec::Detailed(d) if d.os.is_empty() && d.triplet.is_empty() => {
+                if d.features.is_empty() {
+                    Some(serde_json::json!(d.name))
+                } else {
+                    Some(serde_json::json!({
+                        "name": d.name,
+                        "features": d.features,
+                    }))
+                }
+            }
+            _ => None,
+        })
         .collect();
 
     let mani = serde_json::json!({
@@ -83,27 +82,22 @@ pub fn handle_remove(pkg: &str, component_opt: Option<&str>, _features: Option<&
     write_text_if_changed("vcpkg.json", &serde_json::to_string_pretty(&mani)?)?;
     write_json_pretty_changed("triton.json", &root)?;
 
-    // Remove vendored dir if fully unused
-    if let Some(n) = removed_git_name {
-        let still_used = root.components.values().any(|c| {
-            c.link.iter().any(|e| {
-                let (name, _) = e.normalize();
-                name == n
-            })
+    // remove vendored dir if unused
+    let dir = format!("third_party/{pkg}");
+    if Path::new(&dir).exists() {
+        let still_used = root.deps.iter().any(|d| match d {
+            DepSpec::Git(g) => g.name == pkg,
+            _ => false,
         });
         if !still_used {
-            let dir = format!("third_party/{n}");
-            if Path::new(&dir).exists() {
-                let _ = fs::remove_dir_all(&dir);
-            }
+            let _ = fs::remove_dir_all(&dir);
         }
     }
 
-    // Rewrite all component CMake after global change
     for (name, comp) in &root.components {
-        rewrite_component_cmake(name, &root, comp)?;
+        rewrite_component_cmake(name, &root, comp, cmake_ver)?;
     }
-    regenerate_root_cmake(&root)?;
+    regenerate_root_cmake(&root)?; // ✅ fixed here too
     eprintln!("Removed '{}' from project.", pkg);
     Ok(())
 }
