@@ -2,12 +2,12 @@ use anyhow::Result;
 use std::path::Path;
 
 use crate::cmake::detect_vcpkg_triplet;
-use crate::util::{match_dep_to_packages, scan_vcpkg_share_for_configs};
+use crate::util::{discover_cmake_targets, match_dep_to_packages, scan_vcpkg_share_for_configs};
 
 pub fn handle_find_target(dep: &str) -> Result<()> {
     let triplet = detect_vcpkg_triplet();
-    let share_dir = Path::new("vcpkg")
-        .join("installed")
+    // vcpkg manifest mode installs to <project>/vcpkg_installed/<triplet>/
+    let share_dir = Path::new("vcpkg_installed")
         .join(&triplet)
         .join("share");
 
@@ -17,7 +17,7 @@ pub fn handle_find_target(dep: &str) -> Result<()> {
             share_dir.display()
         );
         eprintln!("Make sure dependencies are installed: triton build .");
-        eprintln!("Then check vcpkg/installed/{}/share/ for available packages.", triplet);
+        eprintln!("Then check vcpkg_installed/{}/share/ for available packages.", triplet);
         return Ok(());
     }
 
@@ -49,8 +49,26 @@ pub fn handle_find_target(dep: &str) -> Result<()> {
         let (pkg_name, config_path) = &matches[0];
         eprintln!("Found: {}", pkg_name);
         eprintln!("  Config: {}", config_path.display());
+
+        // Discover actual CMake targets from *Targets.cmake files
+        let pkg_dir = config_path.parent().unwrap_or(Path::new("."));
+        let targets = discover_cmake_targets(pkg_dir);
+
+        if !targets.is_empty() {
+            eprintln!("  Targets:");
+            for t in &targets {
+                eprintln!("    {}", t);
+            }
+        }
+
         eprintln!();
-        if pkg_name.to_ascii_lowercase() != dep.to_ascii_lowercase() {
+        if !targets.is_empty() {
+            let targets_json: Vec<String> = targets.iter().map(|t| format!("\"{}\"", t)).collect();
+            eprintln!(
+                "Use in triton.json:\n  {{ \"name\": \"{}\", \"package\": \"{}\", \"targets\": [{}] }}",
+                dep, pkg_name, targets_json.join(", ")
+            );
+        } else if pkg_name.to_ascii_lowercase() != dep.to_ascii_lowercase() {
             eprintln!(
                 "Use in triton.json:\n  \
                  {{ \"name\": \"{}\", \"package\": \"{}\" }}",
@@ -58,21 +76,23 @@ pub fn handle_find_target(dep: &str) -> Result<()> {
             );
         } else {
             eprintln!("Package name matches dep name — no override needed.");
+            eprintln!("If linking fails, check the targets file manually and add a \"targets\" field.");
         }
     } else {
         eprintln!("Found multiple candidates:");
         for (i, (pkg_name, config_path)) in matches.iter().enumerate() {
-            eprintln!(
-                "  {}. {}  ({})",
-                i + 1,
-                pkg_name,
-                config_path.display()
-            );
+            let pkg_dir = config_path.parent().unwrap_or(Path::new("."));
+            let targets = discover_cmake_targets(pkg_dir);
+            if targets.is_empty() {
+                eprintln!("  {}. {}", i + 1, pkg_name);
+            } else {
+                eprintln!("  {}. {}  targets: [{}]", i + 1, pkg_name, targets.join(", "));
+            }
         }
         eprintln!();
         eprintln!(
             "Specify the correct one in triton.json:\n  \
-             {{ \"name\": \"{}\", \"package\": \"<PackageName>\" }}",
+             {{ \"name\": \"{}\", \"package\": \"<PackageName>\", \"targets\": [\"<Target>\"] }}",
             dep
         );
     }

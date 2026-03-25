@@ -70,16 +70,16 @@ impl Default for GitDep {
 pub struct DepDetailed {
     pub name: String,
     /// Restrict to operating systems (values: "windows", "linux", "macos")
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub os: Vec<String>,
     /// Override vcpkg package name (if different from `name`)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
     /// Restrict to vcpkg triplets
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triplet: Vec<String>,
     /// Additional vcpkg features
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
 }
 
@@ -106,35 +106,21 @@ fn default_cache_type() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TritonComponent {
     pub kind: String, // "exe" | "lib"
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link: Vec<LinkEntry>,
-    /// Preprocessor defs applied to this component (e.g. "GLM_ENABLE_EXPERIMENTAL").
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub defines: Vec<String>,
-    /// Names of deps (as they appear in this component's `link`) to **re-export** PUBLICly.
-    /// Any component that depends on this one will inherit these usage requirements.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exports: Vec<String>,
-    /// Resource directories (relative to the component root) to copy next to the
-    /// executable after each build.  e.g. `["resources"]` → copies
-    /// `components/<name>/resources/` → `$<TARGET_FILE_DIR:target>/resources/`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<String>,
-    /// Extra linker flags passed to target_link_options (PRIVATE).
-    /// Supports platform-conditional flags:
-    ///   "link_options": ["-Wl,--export-dynamic"]         -- all platforms
-    ///   "link_options": { "linux": ["-Wl,--export-dynamic"], "macos": [], "windows": [] }
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "LinkOptions::is_none")]
     pub link_options: LinkOptions,
-    /// Pre-built library files (relative to the component root) to link directly.
-    /// Supports both flat list (all platforms) and per-platform map:
-    ///   `["vendor/dotnet/libnethost.a"]`                     -- all platforms
-    ///   `{ "linux": ["vendor/dotnet/libnethost.a"], "windows": ["vendor/dotnet/nethost.lib"] }`
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "VendorLibs::is_none")]
     pub vendor_libs: VendorLibs,
     /// Asset paths (relative to the component root) to stage next to the target
     /// incrementally.  Directories are mirrored; files are copied if changed.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assets: Vec<String>,
 }
 
@@ -148,6 +134,10 @@ pub enum LinkOptions {
     PerPlatform(BTreeMap<String, Vec<String>>),
 }
 
+impl LinkOptions {
+    pub fn is_none(&self) -> bool { matches!(self, LinkOptions::None) }
+}
+
 /// Vendor library paths — either a flat list (all platforms) or a map keyed by "linux"/"macos"/"windows".
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(untagged)]
@@ -156,6 +146,10 @@ pub enum VendorLibs {
     None,
     All(Vec<String>),
     PerPlatform(BTreeMap<String, Vec<String>>),
+}
+
+impl VendorLibs {
+    pub fn is_none(&self) -> bool { matches!(self, VendorLibs::None) }
 }
 
 /// Allow three forms inside `components.<name>.link`:
@@ -168,9 +162,9 @@ pub enum LinkEntry {
     Name(String),
     Named {
         name: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         package: Option<String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         targets: Option<Vec<String>>,
     },
     Map(BTreeMap<String, LinkHint>),

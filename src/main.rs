@@ -12,7 +12,8 @@ mod util;
 use cli::{Cli, Commands, CmakeCommands};
 use commands::{
     handle_add, handle_build, handle_generate, handle_init, handle_link, handle_remove,
-    handle_run, handle_script, handle_test, handle_cmake_install, handle_find_target
+    handle_remove_component, handle_run, handle_script, handle_test, handle_cmake_install,
+    handle_find_target, handle_unlink,
 };
 
 use std::borrow::Cow;
@@ -61,12 +62,31 @@ fn main() -> Result<()> {
             handle_link(&from, &to)
         }
 
+        Commands::Unlink { edge, to } => {
+            if let Some(t) = to.as_ref() {
+                handle_unlink(&edge, Some(t.as_str()))
+            } else if let Some((a, b)) = edge.split_once(':') {
+                let a = a.trim();
+                let b = b.trim();
+                if !a.is_empty() && !b.is_empty() {
+                    handle_unlink(a, Some(b))
+                } else {
+                    handle_unlink(&edge, None)
+                }
+            } else {
+                handle_unlink(&edge, None)
+            }
+        }
+
         Commands::Test { path, config } =>
             handle_test(&path, &config),
 
         Commands::Cmake { cmd } => match cmd {
             CmakeCommands::Install { version } => handle_cmake_install(version),
         },
+
+        Commands::RemoveComponent { name } =>
+            handle_remove_component(&name),
 
         Commands::FindTarget { dep } =>
             handle_find_target(&dep),

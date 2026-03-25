@@ -45,6 +45,16 @@ pub enum Commands {
         to: Option<String>,
     },
 
+    /// Unlink A from B (remove the dependency edge).
+    ///
+    /// Examples:
+    ///   triton unlink sdl2:Game     — Game no longer depends on sdl2
+    ///   triton unlink sdl2          — remove sdl2 from ALL components' link lists
+    Unlink {
+        edge: String,
+        to: Option<String>,
+    },
+
     /// Remove a package or unlink it from a specific component
     Remove {
         pkg: String,
@@ -96,9 +106,16 @@ pub enum Commands {
         cmd: CmakeCommands,
     },
 
+    /// Remove a component entirely (deletes from triton.json, unlinks from
+    /// all dependents, removes the on-disk directory, and regenerates CMake).
+    RemoveComponent {
+        /// Component name to remove
+        name: String,
+    },
+
     /// Search for the CMake package name of an installed vcpkg dependency.
     ///
-    /// Scans vcpkg/installed/<triplet>/share/ for matching Config.cmake files.
+    /// Scans vcpkg_installed/<triplet>/share/ for matching Config.cmake files.
     FindTarget {
         /// The dependency name to search for (e.g. "openal-soft", "directxtex")
         dep: String,

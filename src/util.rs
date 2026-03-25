@@ -1,6 +1,6 @@
 use anyhow::{ Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::{HashSet, BTreeMap};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -166,6 +166,47 @@ pub fn split_kv(raw: &str) -> (String, String) {
 // vcpkg share-dir scanning (used by find-target and auto-detect)
 // ===========================================================================
 
+/// Scan a package's share directory for exported CMake target names.
+/// Parses `*Targets.cmake` and `*-targets.cmake` files for `add_library(Ns::Target` patterns.
+pub fn discover_cmake_targets(pkg_share_dir: &Path) -> Vec<String> {
+    let mut targets = Vec::new();
+    let entries = match fs::read_dir(pkg_share_dir) {
+        Ok(e) => e,
+        Err(_) => return targets,
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        // Look for *Targets.cmake or *-targets.cmake (but not *-targets-debug/release.cmake)
+        let is_targets_file = (fname.ends_with("Targets.cmake") || fname.ends_with("-targets.cmake"))
+            && !fname.contains("-targets-debug")
+            && !fname.contains("-targets-release")
+            && !fname.contains("-targets-relwithdebinfo")
+            && !fname.contains("-targets-minsizerel");
+        if !is_targets_file { continue; }
+
+        let content = match fs::read_to_string(entry.path()) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Parse lines like: add_library(Microsoft::DirectXTex SHARED IMPORTED)
+        // or: add_library(SDL2::SDL2 STATIC IMPORTED)
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("add_library(") {
+                if let Some(name_end) = rest.find(|c: char| c.is_whitespace() || c == ')') {
+                    let target = &rest[..name_end];
+                    if target.contains("::") && !targets.contains(&target.to_string()) {
+                        targets.push(target.to_string());
+                    }
+                }
+            }
+        }
+    }
+    targets.sort();
+    targets
+}
+
 /// Scan a vcpkg share directory and return all valid CMake config packages.
 /// Returns vec of (package_name, path_to_config_cmake).
 pub fn scan_vcpkg_share_for_configs(share_dir: &Path) -> Vec<(String, PathBuf)> {
@@ -265,11 +306,12 @@ pub fn validate_triton_root(root: &TritonRoot) -> Result<()> {
         }
     }
 
-    // 3. Self-links
+    // 3. Self-links (only if the name is NOT also a dep — if it's a dep,
+    //    the component is linking to the vcpkg/git dep, not to itself)
     for (name, comp) in &root.components {
         for entry in &comp.link {
             let (link_name, _) = entry.normalize();
-            if link_name == *name {
+            if link_name == *name && !is_dep_case_insensitive(root, &link_name) {
                 anyhow::bail!("Component '{}' cannot link to itself.", name);
             }
         }
@@ -294,7 +336,7 @@ pub fn validate_triton_root(root: &TritonRoot) -> Result<()> {
     }
 
     // 5. Circular component dependencies
-    if let Some(cycle) = detect_cycles(&root.components) {
+    if let Some(cycle) = detect_cycles(root) {
         anyhow::bail!("Circular dependency detected: {}", cycle.join(" -> "));
     }
 
@@ -302,15 +344,17 @@ pub fn validate_triton_root(root: &TritonRoot) -> Result<()> {
 }
 
 /// Detect circular dependencies among components using DFS.
-/// Returns Some(cycle_path) if a cycle is found, None otherwise.
-pub fn detect_cycles(components: &BTreeMap<String, TritonComponent>) -> Option<Vec<String>> {
+/// When a link target is both a component AND a dep, the dep takes priority
+/// (CMake wires it via find_package, not component linking), so we skip it
+/// in cycle detection.
+pub fn detect_cycles(root: &TritonRoot) -> Option<Vec<String>> {
     let mut visited = HashSet::new();
     let mut in_stack = HashSet::new();
     let mut path = Vec::new();
 
-    for name in components.keys() {
+    for name in root.components.keys() {
         if !visited.contains(name.as_str()) {
-            if let Some(cycle) = dfs_cycle(name, components, &mut visited, &mut in_stack, &mut path)
+            if let Some(cycle) = dfs_cycle(name, root, &mut visited, &mut in_stack, &mut path)
             {
                 return Some(cycle);
             }
@@ -321,7 +365,7 @@ pub fn detect_cycles(components: &BTreeMap<String, TritonComponent>) -> Option<V
 
 fn dfs_cycle(
     node: &str,
-    components: &BTreeMap<String, TritonComponent>,
+    root: &TritonRoot,
     visited: &mut HashSet<String>,
     in_stack: &mut HashSet<String>,
     path: &mut Vec<String>,
@@ -330,11 +374,16 @@ fn dfs_cycle(
     in_stack.insert(node.to_string());
     path.push(node.to_string());
 
-    if let Some(comp) = components.get(node) {
+    if let Some(comp) = root.components.get(node) {
         for entry in &comp.link {
             let (link_name, _) = entry.normalize();
-            // Only follow component-to-component links
-            if !components.contains_key(&link_name) {
+            // Only follow pure component-to-component links.
+            // If the link target is also a dep, skip it — CMake resolves
+            // it via find_package, not as a component dependency.
+            if !root.components.contains_key(&link_name) {
+                continue;
+            }
+            if is_dep_case_insensitive(root, &link_name) {
                 continue;
             }
             if in_stack.contains(&link_name) {
@@ -346,7 +395,7 @@ fn dfs_cycle(
                 return Some(cycle);
             }
             if !visited.contains(&link_name) {
-                if let Some(cycle) = dfs_cycle(&link_name, components, visited, in_stack, path) {
+                if let Some(cycle) = dfs_cycle(&link_name, root, visited, in_stack, path) {
                     return Some(cycle);
                 }
             }

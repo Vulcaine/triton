@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::models::{DepSpec, GitDep, LinkEntry, TritonComponent, TritonRoot};
+use crate::models::{DepDetailed, DepSpec, GitDep, LinkEntry, TritonComponent, TritonRoot};
 use crate::util::read_json;
 
 /// Simple transactional FS
@@ -239,8 +239,12 @@ fn git_clone(clone_url: &str, name: &str, branch: &Option<String>) -> Result<()>
     Ok(())
 }
 
-pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Result<()> {
+pub fn handle_add(items: &[String], features: Option<&str>, _host: bool) -> Result<()> {
     if items.is_empty() { return Ok(()); }
+
+    let feature_list: Vec<String> = features
+        .map(|f| f.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
 
     let mut root: TritonRoot = read_json("triton.json")?;
     fs::create_dir_all("components")?;
@@ -270,28 +274,20 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
             }
         } else {
             // vcpkg dep
-            if !root.deps.iter().any(|d| matches!(d, DepSpec::Simple(n) if n == pkg)) {
-                root.deps.push(DepSpec::Simple(pkg.to_string()));
-            }
+            let detected = add_or_update_vcpkg_dep(&mut root, pkg, &feature_list);
 
             if !Path::new("vcpkg.json").exists() {
                 let empty = serde_json::json!({ "name": root.app_name, "version":"0.0.0", "dependencies": [] });
                 txn_write_json_pretty(&mut txn, "vcpkg.json", &empty)?;
             }
-            let mut mani: serde_json::Value = crate::util::read_json("vcpkg.json")?;
-            let deps = mani["dependencies"].as_array_mut()
-                .ok_or_else(|| anyhow::anyhow!("vcpkg.json: 'dependencies' must be an array"))?;
-            if !deps.iter().any(|v| v == pkg) {
-                deps.push(serde_json::Value::String(pkg.to_string()));
-                txn_write_json_pretty(&mut txn, "vcpkg.json", &mani)?;
-            }
+            update_vcpkg_manifest(pkg, &feature_list, &mut txn)?;
 
             if let Some(dest) = link_to_opt {
                 let entry = root.components.entry(dest.to_string())
                     .or_insert(TritonComponent { kind: "lib".into(), ..Default::default() });
-                if !entry.link.iter().any(|e| matches!(e, LinkEntry::Name(n) if n == pkg)) {
-                    entry.link.push(LinkEntry::Name(pkg.to_string()));
-                }
+
+                let link_entry = build_link_entry(pkg, &detected);
+                upsert_link(entry, pkg, link_entry);
                 ensure_component_scaffold(dest, &mut txn)?;
             }
         }
@@ -302,4 +298,198 @@ pub fn handle_add(items: &[String], _features: Option<&str>, _host: bool) -> Res
 
     txn.commit();
     Ok(())
+}
+
+/// Add or update a vcpkg dep in triton.json. If features are provided, ensures
+/// the dep is stored as DepDetailed. Merges features if dep already exists.
+/// Returns Some((package_name, targets)) if auto-detected, None otherwise.
+fn add_or_update_vcpkg_dep(root: &mut TritonRoot, pkg: &str, features: &[String]) -> Option<(String, Vec<String>)> {
+    let existing_idx = root.deps.iter().position(|d| d.name() == pkg);
+
+    // Auto-detect from vcpkg_installed regardless of features
+    let detected = auto_detect_package_and_targets(pkg);
+
+    if features.is_empty() {
+        if existing_idx.is_none() {
+            // If we detected a different package name, store as Detailed
+            if let Some((ref pkg_name, _)) = detected {
+                if pkg_name != pkg {
+                    root.deps.push(DepSpec::Detailed(DepDetailed {
+                        name: pkg.to_string(),
+                        package: Some(pkg_name.clone()),
+                        ..Default::default()
+                    }));
+                    return detected;
+                }
+            }
+            root.deps.push(DepSpec::Simple(pkg.to_string()));
+        }
+        return detected;
+    }
+
+    // Features requested — need DepDetailed
+    match existing_idx {
+        Some(idx) => {
+            let existing = &root.deps[idx];
+            let mut detailed = match existing {
+                DepSpec::Simple(_) => DepDetailed {
+                    name: pkg.to_string(),
+                    ..Default::default()
+                },
+                DepSpec::Detailed(d) => d.clone(),
+                _ => return detected, // Git deps don't have vcpkg features
+            };
+            for f in features {
+                if !detailed.features.iter().any(|ef| ef == f) {
+                    detailed.features.push(f.clone());
+                }
+            }
+            if detailed.package.is_none() {
+                if let Some((ref pkg_name, _)) = detected {
+                    detailed.package = Some(pkg_name.clone());
+                }
+            }
+            root.deps[idx] = DepSpec::Detailed(detailed);
+        }
+        None => {
+            let mut detailed = DepDetailed {
+                name: pkg.to_string(),
+                features: features.to_vec(),
+                ..Default::default()
+            };
+            if let Some((ref pkg_name, _)) = detected {
+                detailed.package = Some(pkg_name.clone());
+            }
+            root.deps.push(DepSpec::Detailed(detailed));
+        }
+    }
+    detected
+}
+
+/// Try to auto-detect the CMake package name and targets from vcpkg_installed.
+/// Returns Some((package_name, targets)) if found, None otherwise.
+fn auto_detect_package_and_targets(dep_name: &str) -> Option<(String, Vec<String>)> {
+    let triplet = crate::cmake::detect_vcpkg_triplet();
+    let share_dir = std::path::Path::new("vcpkg_installed")
+        .join(&triplet)
+        .join("share");
+
+    if !share_dir.exists() {
+        return None;
+    }
+
+    let packages = crate::util::scan_vcpkg_share_for_configs(&share_dir);
+    let matches = crate::util::match_dep_to_packages(dep_name, &packages);
+
+    if matches.len() == 1 {
+        let (pkg_name, config_path) = &matches[0];
+        eprintln!("Auto-detected CMake package: {}", pkg_name);
+
+        let pkg_dir = config_path.parent().unwrap_or(std::path::Path::new("."));
+        let targets = crate::util::discover_cmake_targets(pkg_dir);
+        if !targets.is_empty() {
+            eprintln!("Auto-detected targets: [{}]", targets.join(", "));
+        }
+        Some((pkg_name.clone(), targets))
+    } else {
+        None
+    }
+}
+
+/// Write the dep (with optional features) to vcpkg.json manifest.
+fn update_vcpkg_manifest(pkg: &str, features: &[String], txn: &mut FsTxn) -> Result<()> {
+    let mut mani: serde_json::Value = crate::util::read_json("vcpkg.json")?;
+    let deps = mani["dependencies"].as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("vcpkg.json: 'dependencies' must be an array"))?;
+
+    // Find existing entry (could be string, string with bracket features, or object with "name")
+    let existing_idx = deps.iter().position(|v| {
+        if let Some(s) = v.as_str() {
+            // Match plain "pkg" or bracket notation "pkg[feature]"
+            return s == pkg || s.starts_with(&format!("{}[", pkg));
+        }
+        if let Some(obj) = v.as_object() {
+            if let Some(n) = obj.get("name").and_then(|n| n.as_str()) {
+                return n == pkg;
+            }
+        }
+        false
+    });
+
+    if features.is_empty() {
+        // No features — add as plain string if not present
+        if existing_idx.is_none() {
+            deps.push(serde_json::Value::String(pkg.to_string()));
+        }
+    } else {
+        // Features — need object form, merge if existing
+        let mut all_features: Vec<String> = features.to_vec();
+        if let Some(idx) = existing_idx {
+            // Extract existing features if any
+            if let Some(obj) = deps[idx].as_object() {
+                if let Some(existing_feats) = obj.get("features").and_then(|f| f.as_array()) {
+                    for f in existing_feats {
+                        if let Some(s) = f.as_str() {
+                            if !all_features.contains(&s.to_string()) {
+                                all_features.push(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            deps.remove(idx);
+        }
+        all_features.sort();
+        deps.push(serde_json::json!({
+            "name": pkg,
+            "features": all_features,
+        }));
+    }
+
+    txn_write_json_pretty(txn, "vcpkg.json", &mani)?;
+    Ok(())
+}
+
+/// Build the best LinkEntry for a dep given auto-detection results.
+fn build_link_entry(pkg: &str, detected: &Option<(String, Vec<String>)>) -> LinkEntry {
+    if let Some((ref pkg_name, ref targets)) = detected {
+        if !targets.is_empty() {
+            return LinkEntry::Named {
+                name: pkg.to_string(),
+                package: Some(pkg_name.clone()),
+                targets: Some(targets.clone()),
+            };
+        }
+        if pkg_name != pkg {
+            return LinkEntry::Named {
+                name: pkg.to_string(),
+                package: Some(pkg_name.clone()),
+                targets: None,
+            };
+        }
+    }
+    LinkEntry::Name(pkg.to_string())
+}
+
+/// Insert or upgrade a link entry in a component.
+/// If the dep is already linked as a plain Name and we have a richer Named entry,
+/// upgrade it in place.
+fn upsert_link(comp: &mut TritonComponent, pkg: &str, new_entry: LinkEntry) {
+    let existing_idx = comp.link.iter().position(|e| e.normalize().0 == pkg);
+    match existing_idx {
+        Some(idx) => {
+            // Upgrade if new entry is richer (Named with targets beats plain Name)
+            let should_upgrade = match (&comp.link[idx], &new_entry) {
+                (LinkEntry::Name(_), LinkEntry::Named { .. }) => true,
+                (LinkEntry::Named { targets: None, .. }, LinkEntry::Named { targets: Some(_), .. }) => true,
+                _ => false,
+            };
+            if should_upgrade {
+                comp.link[idx] = new_entry;
+            }
+        }
+        None => {
+            comp.link.push(new_entry);
+        }
+    }
 }

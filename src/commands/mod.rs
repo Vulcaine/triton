@@ -10,6 +10,8 @@ pub mod generate;
 pub mod install;
 pub mod cmake_install;
 pub mod find_target;
+pub mod unlink;
+pub mod remove_component;
 
 pub use init::handle_init;
 pub use add::handle_add;
@@ -23,3 +25,5 @@ pub use generate::handle_generate;
 pub use install::handle_install;
 pub use cmake_install::handle_cmake_install;
 pub use find_target::handle_find_target;
+pub use unlink::handle_unlink;
+pub use remove_component::handle_remove_component;

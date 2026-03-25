@@ -54,13 +54,22 @@ pub fn handle_remove(
         });
     }
 
-    // Sync vcpkg.json with remaining simple deps
-    let remaining: Vec<String> = root
+    // Sync vcpkg.json with remaining deps (preserving features)
+    let remaining: Vec<serde_json::Value> = root
         .deps
         .iter()
         .filter_map(|d| match d {
-            DepSpec::Simple(n) => Some(n.clone()),
-            DepSpec::Detailed(d) if d.os.is_empty() && d.triplet.is_empty() => Some(d.name.clone()),
+            DepSpec::Simple(n) => Some(serde_json::json!(n)),
+            DepSpec::Detailed(d) if d.os.is_empty() && d.triplet.is_empty() => {
+                if d.features.is_empty() {
+                    Some(serde_json::json!(d.name))
+                } else {
+                    Some(serde_json::json!({
+                        "name": d.name,
+                        "features": d.features,
+                    }))
+                }
+            }
             _ => None,
         })
         .collect();

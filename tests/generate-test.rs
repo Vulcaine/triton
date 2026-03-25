@@ -1224,3 +1224,116 @@ fn effective_cmake_version_at_least_minimum() {
         "effective_cmake_version should be >= MIN_CMAKE_VERSION"
     );
 }
+
+// ── Generate idempotency and dedup tests ────────────────────────────────
+
+#[test]
+#[serial]
+fn generate_is_idempotent() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    std::env::set_current_dir(root).unwrap();
+
+    copy_offline_vcpkg_to(root);
+    handle_init(Some("."), "Ninja", "20").unwrap();
+
+    handle_generate().unwrap();
+    let triton_after_1 = fs::read_to_string("triton.json").unwrap();
+    let vcpkg_after_1 = fs::read_to_string("vcpkg.json").unwrap();
+    let root_cmake_1 = fs::read_to_string("components/CMakeLists.txt").unwrap();
+
+    handle_generate().unwrap();
+    let triton_after_2 = fs::read_to_string("triton.json").unwrap();
+    let vcpkg_after_2 = fs::read_to_string("vcpkg.json").unwrap();
+    let root_cmake_2 = fs::read_to_string("components/CMakeLists.txt").unwrap();
+
+    assert_eq!(triton_after_1, triton_after_2, "triton.json should not change on second generate");
+    assert_eq!(vcpkg_after_1, vcpkg_after_2, "vcpkg.json should not change on second generate");
+    assert_eq!(root_cmake_1, root_cmake_2, "root CMakeLists should not change on second generate");
+}
+
+#[test]
+#[serial]
+fn generate_dedups_duplicate_deps() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    std::env::set_current_dir(root).unwrap();
+
+    // Manually create triton.json with duplicate deps
+    let meta = TritonRoot {
+        app_name: "demo".into(),
+        generator: "Ninja".into(),
+        cxx_std: "20".into(),
+        deps: vec![
+            DepSpec::Simple("glm".into()),
+            DepSpec::Simple("sdl2".into()),
+            DepSpec::Simple("glm".into()), // duplicate!
+        ],
+        components: Default::default(),
+        scripts: HashMap::new(),
+    };
+    write_json_pretty_changed("triton.json", &meta).unwrap();
+    fs::create_dir_all("components").unwrap();
+    write_minimal_resources(root);
+
+    handle_generate().unwrap();
+
+    let after: TritonRoot = read_json("triton.json").unwrap();
+    let glm_count = after.deps.iter().filter(|d| d.name() == "glm").count();
+    assert_eq!(glm_count, 1, "generate should dedup: expected 1 glm dep, got {}", glm_count);
+    assert!(after.deps.iter().any(|d| d.name() == "sdl2"), "sdl2 should still be present");
+}
+
+#[test]
+#[serial]
+fn generate_dedup_keeps_detailed_over_simple() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    std::env::set_current_dir(root).unwrap();
+
+    // Simple first, then Detailed — Detailed (last) should win
+    let meta = TritonRoot {
+        app_name: "demo".into(),
+        generator: "Ninja".into(),
+        cxx_std: "20".into(),
+        deps: vec![
+            DepSpec::Simple("directxtex".into()),
+            DepSpec::Detailed(DepDetailed {
+                name: "directxtex".into(),
+                features: vec!["dx12".into()],
+                package: Some("directxtex".into()),
+                ..Default::default()
+            }),
+        ],
+        components: Default::default(),
+        scripts: HashMap::new(),
+    };
+    write_json_pretty_changed("triton.json", &meta).unwrap();
+    fs::create_dir_all("components").unwrap();
+    write_minimal_resources(root);
+
+    handle_generate().unwrap();
+
+    let after: TritonRoot = read_json("triton.json").unwrap();
+    let dtex_count = after.deps.iter().filter(|d| d.name() == "directxtex").count();
+    assert_eq!(dtex_count, 1, "should be deduped to 1 entry");
+
+    // The Detailed version (last one) should win
+    match after.deps.iter().find(|d| d.name() == "directxtex").unwrap() {
+        DepSpec::Detailed(d) => {
+            assert!(d.features.contains(&"dx12".to_string()), "features should be preserved");
+            assert_eq!(d.package.as_deref(), Some("directxtex"), "package should be preserved");
+        }
+        other => panic!("expected Detailed to survive dedup, got: {:?}", other),
+    }
+
+    // vcpkg.json should have features object form
+    let vcpkg_raw = fs::read_to_string("vcpkg.json").unwrap();
+    let vcpkg: serde_json::Value = serde_json::from_str(&vcpkg_raw).unwrap();
+    let deps = vcpkg["dependencies"].as_array().unwrap();
+    let has_features = deps.iter().any(|v| {
+        v.get("name").and_then(|n| n.as_str()) == Some("directxtex")
+            && v.get("features").is_some()
+    });
+    assert!(has_features, "vcpkg.json should have directxtex with features after dedup");
+}

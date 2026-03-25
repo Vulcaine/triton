@@ -58,6 +58,8 @@ triton run .                      # run the default executable
 | `triton add <deps...>` | Add dependencies, optionally link to components |
 | `triton remove <dep>` | Remove a dependency entirely |
 | `triton link <A>:<B>` | Link dep or component A to component B |
+| `triton unlink <A>:<B>` | Remove link from component B to A |
+| `triton unlink <A>` | Remove A from all components' link lists |
 | `triton generate` | Regenerate CMake files from `triton.json` |
 | `triton build <path>` | Configure + build |
 | `triton run <path>` | Run a built component |
@@ -105,6 +107,15 @@ triton link Core:Game          # link component to component
 ```
 
 Creates missing components as `lib` by default.
+
+### `unlink`
+
+```bash
+triton unlink sdl2:Game       # Game no longer depends on sdl2
+triton unlink sdl2            # remove sdl2 from ALL components' link lists
+```
+
+Only removes the link — the dep itself stays in `triton.json`. Use `triton remove` to remove the dep entirely.
 
 ### `build`
 

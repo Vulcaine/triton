@@ -15,9 +15,9 @@ pub fn handle_install(_root: &TritonRoot, project: &Path, _vcpkg_exe: &PathBuf) 
     crate::commands::handle_generate()?;
 
     let triplet = detect_vcpkg_triplet();
+    // vcpkg manifest mode installs to <project>/vcpkg_installed/<triplet>/
     let share_dir = project
-        .join("vcpkg")
-        .join("installed")
+        .join("vcpkg_installed")
         .join(&triplet)
         .join("share");
 

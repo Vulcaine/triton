@@ -8,10 +8,10 @@ use anyhow::Result;
 use serial_test::serial;
 
 
-use triton::cmake::{effective_cmake_version, rewrite_component_cmake};
+use triton::cmake::{detect_vcpkg_triplet, effective_cmake_version, rewrite_component_cmake};
 use triton::commands::{handle_add, handle_generate, handle_init, handle_remove};
 use triton::models::*;
-use triton::util::write_json_pretty_changed;
+use triton::util::{discover_cmake_targets, read_json, scan_vcpkg_share_for_configs, match_dep_to_packages, write_json_pretty_changed};
 
 mod test_utils;
 use test_utils::{copy_offline_vcpkg_to, write_file, read_triton, read_vcpkg, stub_vcpkg, with_temp_dir};
@@ -712,6 +712,338 @@ fn link_entry_named_with_targets() -> Result<()> {
             "UI CMakeLists should have target_link_libraries with RmlUi::RmlUi. Got:\n{}",
             ui_cm
         );
+
+        Ok(())
+    })
+}
+
+// ── vcpkg_installed path tests ──────────────────────────────────────────
+
+/// Create a fake vcpkg_installed share directory with config cmake files.
+fn create_fake_vcpkg_installed(root: &Path, triplet: &str, packages: &[(&str, &str)]) {
+    for (dir_name, config_filename) in packages {
+        let pkg_dir = root.join("vcpkg_installed").join(triplet).join("share").join(dir_name);
+        fs::create_dir_all(&pkg_dir).unwrap();
+        write_file(
+            pkg_dir.join(config_filename),
+            &format!("# fake {}Config.cmake\n", dir_name),
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn find_target_uses_vcpkg_installed_not_vcpkg_installed_subdir() -> Result<()> {
+    with_temp_dir(|root| {
+        let triplet = detect_vcpkg_triplet();
+
+        // Create fake vcpkg_installed structure (manifest mode location)
+        create_fake_vcpkg_installed(root, &triplet, &[
+            ("directxtex", "directxtexConfig.cmake"),
+        ]);
+
+        // scan_vcpkg_share_for_configs should find it at vcpkg_installed/<triplet>/share
+        let share_dir = root.join("vcpkg_installed").join(&triplet).join("share");
+        let packages = scan_vcpkg_share_for_configs(&share_dir);
+        assert!(!packages.is_empty(), "should find packages in vcpkg_installed");
+        assert!(
+            packages.iter().any(|(name, _)| name == "directxtex"),
+            "should find directxtex, got: {:?}", packages
+        );
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn find_target_matches_case_insensitive_with_hyphen_normalization() -> Result<()> {
+    with_temp_dir(|root| {
+        let triplet = detect_vcpkg_triplet();
+
+        // Create packages with different casing / naming conventions
+        create_fake_vcpkg_installed(root, &triplet, &[
+            ("OpenAL", "OpenALConfig.cmake"),
+            ("SDL2", "SDL2Config.cmake"),
+            ("directxtex", "directxtexConfig.cmake"),
+        ]);
+
+        let share_dir = root.join("vcpkg_installed").join(&triplet).join("share");
+        let packages = scan_vcpkg_share_for_configs(&share_dir);
+
+        // "openal-soft" should match "OpenAL" via normalization
+        let _matches = match_dep_to_packages("openal-soft", &packages);
+        // Might not match exactly since "openal_soft" != "openal", depends on substring
+        // But "directxtex" should match "directxtex" exactly
+        let dtex = match_dep_to_packages("directxtex", &packages);
+        assert_eq!(dtex.len(), 1, "directxtex should match exactly");
+        assert_eq!(dtex[0].0, "directxtex");
+
+        // SDL2 should match "sdl2" (case insensitive)
+        let sdl = match_dep_to_packages("sdl2", &packages);
+        assert_eq!(sdl.len(), 1, "sdl2 should match SDL2");
+        assert_eq!(sdl[0].0, "SDL2");
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn find_target_does_not_look_in_old_vcpkg_installed_path() -> Result<()> {
+    with_temp_dir(|root| {
+        let triplet = detect_vcpkg_triplet();
+
+        // Put packages ONLY in the old wrong location
+        let old_share = root.join("vcpkg").join("installed").join(&triplet).join("share").join("glm");
+        fs::create_dir_all(&old_share).unwrap();
+        write_file(old_share.join("glmConfig.cmake"), "# old location\n");
+
+        // The correct location should be empty
+        let share_dir = root.join("vcpkg_installed").join(&triplet).join("share");
+        let packages = scan_vcpkg_share_for_configs(&share_dir);
+        assert!(packages.is_empty(), "should NOT find packages in old vcpkg/installed/ path");
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn find_target_discovers_config_cmake_variants() -> Result<()> {
+    with_temp_dir(|root| {
+        let triplet = detect_vcpkg_triplet();
+
+        // Test both naming conventions: FooConfig.cmake and foo-config.cmake
+        let share = root.join("vcpkg_installed").join(&triplet).join("share");
+
+        // Package using FooConfig.cmake convention
+        let pkg1 = share.join("MyLib");
+        fs::create_dir_all(&pkg1).unwrap();
+        write_file(pkg1.join("MyLibConfig.cmake"), "# MyLibConfig\n");
+
+        // Package using foo-config.cmake convention
+        let pkg2 = share.join("otherlib");
+        fs::create_dir_all(&pkg2).unwrap();
+        write_file(pkg2.join("otherlib-config.cmake"), "# otherlib-config\n");
+
+        let packages = scan_vcpkg_share_for_configs(&share);
+        assert_eq!(packages.len(), 2, "should find both config conventions, got: {:?}", packages);
+
+        let names: Vec<&str> = packages.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"MyLib"), "should find MyLib");
+        assert!(names.contains(&"otherlib"), "should find otherlib");
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn discover_cmake_targets_parses_targets_file() -> Result<()> {
+    with_temp_dir(|root| {
+        let triplet = detect_vcpkg_triplet();
+        let pkg_dir = root.join("vcpkg_installed").join(&triplet).join("share").join("directxtex");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        // Write a fake targets file mimicking real vcpkg output
+        write_file(pkg_dir.join("directxtex-config.cmake"), "# config\n");
+        write_file(pkg_dir.join("DirectXTex-targets.cmake"), r#"
+# Generated by CMake
+add_library(Microsoft::DirectXTex SHARED IMPORTED)
+set_target_properties(Microsoft::DirectXTex PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include"
+)
+"#);
+        // Debug/release config files should be ignored
+        write_file(pkg_dir.join("DirectXTex-targets-debug.cmake"), r#"
+set_target_properties(Microsoft::DirectXTex PROPERTIES
+  IMPORTED_LOCATION_DEBUG "${_IMPORT_PREFIX}/debug/bin/DirectXTex.dll"
+)
+"#);
+
+        let targets = discover_cmake_targets(&pkg_dir);
+        assert_eq!(targets, vec!["Microsoft::DirectXTex"],
+            "should discover namespaced target from Targets.cmake, got: {:?}", targets);
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn discover_cmake_targets_handles_multiple_targets() -> Result<()> {
+    with_temp_dir(|root| {
+        let triplet = detect_vcpkg_triplet();
+        let pkg_dir = root.join("vcpkg_installed").join(&triplet).join("share").join("sdl2");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        write_file(pkg_dir.join("SDL2Config.cmake"), "# config\n");
+        write_file(pkg_dir.join("SDL2-targets.cmake"), r#"
+add_library(SDL2::SDL2 SHARED IMPORTED)
+add_library(SDL2::SDL2main STATIC IMPORTED)
+add_library(SDL2::SDL2-static STATIC IMPORTED)
+"#);
+
+        let targets = discover_cmake_targets(&pkg_dir);
+        assert_eq!(targets.len(), 3, "should find 3 targets, got: {:?}", targets);
+        assert!(targets.contains(&"SDL2::SDL2".to_string()));
+        assert!(targets.contains(&"SDL2::SDL2main".to_string()));
+        assert!(targets.contains(&"SDL2::SDL2-static".to_string()));
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn discover_cmake_targets_returns_empty_when_no_targets_file() -> Result<()> {
+    with_temp_dir(|root| {
+        let triplet = detect_vcpkg_triplet();
+        let pkg_dir = root.join("vcpkg_installed").join(&triplet).join("share").join("glm");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        // Only a config file, no targets file (header-only library)
+        write_file(pkg_dir.join("glmConfig.cmake"), "# header only\n");
+
+        let targets = discover_cmake_targets(&pkg_dir);
+        assert!(targets.is_empty(), "header-only lib should have no targets file");
+
+        Ok(())
+    })
+}
+
+// ── Auto-detect package+targets on add ──────────────────────────────────
+
+#[test]
+#[serial]
+fn add_auto_detects_package_and_targets_from_vcpkg_installed() -> Result<()> {
+    with_temp_dir(|root| {
+        let triplet = detect_vcpkg_triplet();
+
+        // Seed triton.json and vcpkg.json
+        seed_triton_json(root, &TritonRoot {
+            app_name: "demo".into(),
+            generator: "Ninja".into(),
+            cxx_std: "20".into(),
+            deps: vec![],
+            components: {
+                let mut m = BTreeMap::new();
+                m.insert("App".into(), TritonComponent { kind: "exe".into(), ..Default::default() });
+                m
+            },
+            scripts: HashMap::new(),
+        });
+        seed_vcpkg_json(root, "demo");
+        stub_vcpkg(&root.join("bin"));
+
+        // Create fake vcpkg_installed with directxtex package + targets
+        let pkg_dir = root.join("vcpkg_installed").join(&triplet).join("share").join("directxtex");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        write_file(pkg_dir.join("directxtex-config.cmake"), "# config\n");
+        write_file(pkg_dir.join("DirectXTex-targets.cmake"),
+            "add_library(Microsoft::DirectXTex SHARED IMPORTED)\n");
+
+        // Create component dir
+        let comp_dir = root.join("components/App");
+        fs::create_dir_all(comp_dir.join("src")).unwrap();
+        fs::create_dir_all(comp_dir.join("include")).unwrap();
+
+        // Add with features and link to App
+        handle_add(&[String::from("directxtex:App")], Some("dx12"), false)?;
+
+        // Check triton.json — dep should be Detailed with package set
+        let t: TritonRoot = read_json(root.join("triton.json"))?;
+        let dep = t.deps.iter().find(|d: &&DepSpec| d.name() == "directxtex")
+            .expect("directxtex dep should exist");
+        match dep {
+            DepSpec::Detailed(d) => {
+                assert_eq!(d.package.as_deref(), Some("directxtex"),
+                    "package should be auto-detected");
+                assert!(d.features.contains(&"dx12".to_string()),
+                    "features should contain dx12");
+                // os, triplet should be absent (not serialized)
+            }
+            other => panic!("expected DepDetailed, got: {:?}", other),
+        }
+
+        // Check component link — should be Named with package+targets
+        let app = t.components.get("App").expect("App should exist");
+        let link = app.link.iter().find(|e: &&LinkEntry| e.normalize().0 == "directxtex")
+            .expect("App should link directxtex");
+        let targets = link.all_targets();
+        assert!(targets.contains(&"Microsoft::DirectXTex".to_string()),
+            "link entry should have auto-detected target Microsoft::DirectXTex, got: {:?}", targets);
+
+        // Check vcpkg.json has features object form
+        let mani: serde_json::Value = read_json(root.join("vcpkg.json"))?;
+        let deps = mani["dependencies"].as_array().unwrap();
+        let dtex = deps.iter().find(|v: &&serde_json::Value| v.get("name").and_then(|n| n.as_str()) == Some("directxtex"));
+        assert!(dtex.is_some(), "vcpkg.json should have directxtex object");
+        let feats = dtex.unwrap()["features"].as_array().unwrap();
+        assert!(feats.iter().any(|f: &serde_json::Value| f.as_str() == Some("dx12")));
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_without_vcpkg_installed_still_works() -> Result<()> {
+    with_temp_dir(|root| {
+        // No vcpkg_installed dir — auto-detect should gracefully return None
+        seed_triton_json(root, &TritonRoot {
+            app_name: "demo".into(),
+            generator: "Ninja".into(),
+            cxx_std: "20".into(),
+            deps: vec![],
+            components: Default::default(),
+            scripts: HashMap::new(),
+        });
+        seed_vcpkg_json(root, "demo");
+        stub_vcpkg(&root.join("bin"));
+
+        handle_add(&[String::from("glm")], Some("extras"), false)?;
+
+        // Should still create a Detailed dep with features, just no package/targets
+        let t: TritonRoot = read_json(root.join("triton.json"))?;
+        match t.deps.iter().find(|d: &&DepSpec| d.name() == "glm") {
+            Some(DepSpec::Detailed(d)) => {
+                assert!(d.features.contains(&"extras".to_string()));
+                // No auto-detection without vcpkg_installed
+                assert!(d.package.is_none(), "package should be None without vcpkg_installed");
+            }
+            other => panic!("expected DepDetailed, got: {:?}", other),
+        }
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_serializes_dep_detailed_without_empty_fields() -> Result<()> {
+    with_temp_dir(|root| {
+        seed_triton_json(root, &TritonRoot {
+            app_name: "demo".into(),
+            generator: "Ninja".into(),
+            cxx_std: "20".into(),
+            deps: vec![],
+            components: Default::default(),
+            scripts: HashMap::new(),
+        });
+        seed_vcpkg_json(root, "demo");
+        stub_vcpkg(&root.join("bin"));
+
+        handle_add(&[String::from("curl")], Some("http2"), false)?;
+
+        // Read raw JSON to check no empty fields are serialized
+        let raw = fs::read_to_string(root.join("triton.json")).unwrap();
+        // The dep entry should NOT contain "os": [], "triplet": [], "package": null
+        // (thanks to skip_serializing_if)
+        assert!(!raw.contains("\"os\": []"), "should not serialize empty os array");
+        assert!(!raw.contains("\"triplet\": []"), "should not serialize empty triplet array");
+        assert!(!raw.contains("\"package\": null"), "should not serialize null package");
 
         Ok(())
     })

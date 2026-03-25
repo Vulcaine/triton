@@ -19,7 +19,9 @@ pub fn write_file(path: impl AsRef<Path>, s: &str) {
 pub fn copy_offline_vcpkg_to<P: AsRef<Path>>(proj: P) {
     let dest = proj.as_ref().join("vcpkg");
     let buildsystems = dest.join("scripts/buildsystems");
-    let gtest_share = dest.join("installed/x64-windows/share/gtest");
+    // vcpkg manifest mode installs to vcpkg_installed/ (sibling of vcpkg/)
+    let proj = proj.as_ref();
+    let gtest_share = proj.join("vcpkg_installed/x64-windows/share/gtest");
     fs::create_dir_all(&buildsystems).unwrap();
     fs::create_dir_all(&gtest_share).unwrap();
 

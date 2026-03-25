@@ -399,6 +399,17 @@ fn validate_allows_deps_in_links() {
 // detect_cycles
 // ===========================================================================
 
+fn make_root_with(deps: Vec<DepSpec>, components: BTreeMap<String, TritonComponent>) -> TritonRoot {
+    TritonRoot {
+        app_name: "demo".into(),
+        generator: "Ninja".into(),
+        cxx_std: "20".into(),
+        deps,
+        components,
+        scripts: HashMap::default(),
+    }
+}
+
 #[test]
 fn detect_cycles_finds_direct_cycle() {
     let mut components = BTreeMap::new();
@@ -419,7 +430,8 @@ fn detect_cycles_finds_direct_cycle() {
         },
     );
 
-    let cycle = detect_cycles(&components);
+    let root = make_root_with(vec![], components);
+    let cycle = detect_cycles(&root);
     assert!(cycle.is_some(), "should detect A <-> B cycle");
     let path = cycle.unwrap();
     assert!(path.len() >= 3, "cycle path should be at least [A, B, A]");
@@ -453,7 +465,8 @@ fn detect_cycles_finds_indirect_cycle() {
         },
     );
 
-    let cycle = detect_cycles(&components);
+    let root = make_root_with(vec![], components);
+    let cycle = detect_cycles(&root);
     assert!(cycle.is_some(), "should detect A -> B -> C -> A cycle");
 }
 
@@ -477,7 +490,8 @@ fn detect_cycles_no_cycle() {
         },
     );
 
-    assert!(detect_cycles(&components).is_none());
+    let root = make_root_with(vec![], components);
+    assert!(detect_cycles(&root).is_none());
 }
 
 #[test]
@@ -493,7 +507,41 @@ fn detect_cycles_ignores_dep_links() {
         },
     );
 
-    assert!(detect_cycles(&components).is_none());
+    let root = make_root_with(vec![], components);
+    assert!(detect_cycles(&root).is_none());
+}
+
+#[test]
+fn detect_cycles_skips_when_link_target_is_also_a_dep() {
+    // If directxtex is both a component and a dep, linking to it should not
+    // create a cycle — CMake resolves the dep via find_package.
+    let mut components = BTreeMap::new();
+    components.insert(
+        "directxtex".into(),
+        TritonComponent {
+            kind: "lib".into(),
+            link: vec![LinkEntry::Name("valeria_render".into())],
+            ..Default::default()
+        },
+    );
+    components.insert(
+        "valeria_render".into(),
+        TritonComponent {
+            kind: "lib".into(),
+            link: vec![LinkEntry::Name("directxtex".into())],
+            ..Default::default()
+        },
+    );
+
+    // directxtex is ALSO a dep — so the cycle should be ignored
+    let root = make_root_with(
+        vec![DepSpec::Simple("directxtex".into())],
+        components,
+    );
+    assert!(
+        detect_cycles(&root).is_none(),
+        "Should not detect cycle when link target is also a dep"
+    );
 }
 
 // ===========================================================================
@@ -579,9 +627,9 @@ fn generate_rejects_invalid_kind() {
 
 #[test]
 fn dep_and_component_same_name_is_valid() {
-    // It's valid to have a dep and component with the same name
-    // (the component wraps the dep). But the component must actually
-    // link to the dep for it to be wired.
+    // It's valid to have a dep and component with the same name.
+    // The component wraps the dep — "directxtex" in the link list refers
+    // to the vcpkg dep (since it's in root.deps), not a self-link.
     let mut components = BTreeMap::new();
     components.insert(
         "directxtex".into(),
@@ -601,17 +649,37 @@ fn dep_and_component_same_name_is_valid() {
         scripts: HashMap::default(),
     };
 
-    // This should be valid — self-link check should not trigger because
-    // "directxtex" in the link list refers to the DEP, not the component.
-    // But our validator will see it as a self-link since the name matches.
-    // This is actually correct: a component linking to itself IS a self-link.
-    // The component should link to the dep with a different reference approach
-    // or the dep should not share the component name.
-    let result = validate_triton_root(&root);
-    // This WILL fail with self-link error — which is the correct behavior.
-    // The user should not name a component the same as a dep it wraps.
+    // Should be valid — the name matches a dep, so it's a dep link, not self-link
     assert!(
-        result.is_err(),
-        "Component with same name as dep linking to itself should be rejected"
+        validate_triton_root(&root).is_ok(),
+        "Component with same name as dep should be allowed to link to the dep"
+    );
+}
+
+#[test]
+fn self_link_still_rejected_when_not_a_dep() {
+    // If a component links to itself and it's NOT also a dep, it's a real self-link
+    let mut components = BTreeMap::new();
+    components.insert(
+        "Core".into(),
+        TritonComponent {
+            kind: "lib".into(),
+            link: vec![LinkEntry::Name("Core".into())],
+            ..Default::default()
+        },
+    );
+
+    let root = TritonRoot {
+        app_name: "demo".into(),
+        generator: "Ninja".into(),
+        cxx_std: "20".into(),
+        deps: vec![], // Core is NOT a dep
+        components,
+        scripts: HashMap::default(),
+    };
+
+    assert!(
+        validate_triton_root(&root).is_err(),
+        "Pure self-link should still be rejected"
     );
 }

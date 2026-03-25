@@ -328,3 +328,204 @@ fn add_creates_vcpkg_json_if_missing() -> Result<()> {
         Ok(())
     })
 }
+
+// ── Feature flag tests ──────────────────────────────────────────────────
+
+#[test]
+#[serial]
+fn add_with_features_creates_detailed_dep_in_triton_json() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        handle_add(&[String::from("directxtex")], Some("dx12"), false)?;
+
+        let t = read_triton(root);
+        let dep = t.deps.iter().find(|d| d.name() == "directxtex");
+        assert!(dep.is_some(), "directxtex dep should exist");
+        match dep.unwrap() {
+            DepSpec::Detailed(d) => {
+                assert!(d.features.contains(&"dx12".to_string()),
+                    "features should contain dx12, got: {:?}", d.features);
+            }
+            other => panic!("expected DepDetailed, got: {:?}", other),
+        }
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_with_features_writes_object_form_to_vcpkg_json() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        handle_add(&[String::from("directxtex")], Some("dx12,dx11"), false)?;
+
+        let mani = read_vcpkg(root);
+        let deps = mani["dependencies"].as_array().unwrap();
+
+        // Should be object form with features, not a plain string
+        let dtex = deps.iter().find(|v| {
+            v.get("name").and_then(|n| n.as_str()) == Some("directxtex")
+        });
+        assert!(dtex.is_some(), "vcpkg.json should have directxtex as object, got: {:?}", deps);
+
+        let features = dtex.unwrap()["features"].as_array().unwrap();
+        let feature_strs: Vec<&str> = features.iter().filter_map(|f| f.as_str()).collect();
+        assert!(feature_strs.contains(&"dx11"), "should contain dx11");
+        assert!(feature_strs.contains(&"dx12"), "should contain dx12");
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_without_features_creates_simple_dep() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        handle_add(&[String::from("glm")], None, false)?;
+
+        let t = read_triton(root);
+        let dep = t.deps.iter().find(|d| d.name() == "glm");
+        assert!(matches!(dep, Some(DepSpec::Simple(_))), "should be Simple dep without features");
+
+        let mani = read_vcpkg(root);
+        let deps = mani["dependencies"].as_array().unwrap();
+        assert!(deps.iter().any(|v| v.as_str() == Some("glm")), "vcpkg.json should have plain string 'glm'");
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_features_to_existing_simple_dep_upgrades_to_detailed() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        // First add without features
+        handle_add(&[String::from("directxtex")], None, false)?;
+        let t = read_triton(root);
+        assert!(matches!(t.deps.iter().find(|d| d.name() == "directxtex"), Some(DepSpec::Simple(_))));
+
+        // Now add same dep with features — should upgrade to Detailed
+        handle_add(&[String::from("directxtex")], Some("dx12"), false)?;
+        let t2 = read_triton(root);
+        match t2.deps.iter().find(|d| d.name() == "directxtex") {
+            Some(DepSpec::Detailed(d)) => {
+                assert!(d.features.contains(&"dx12".to_string()),
+                    "features should contain dx12 after upgrade");
+            }
+            other => panic!("expected DepDetailed after upgrade, got: {:?}", other),
+        }
+
+        // vcpkg.json should now have object form
+        let mani = read_vcpkg(root);
+        let deps = mani["dependencies"].as_array().unwrap();
+        let dtex = deps.iter().find(|v| {
+            v.get("name").and_then(|n| n.as_str()) == Some("directxtex")
+        });
+        assert!(dtex.is_some(), "vcpkg.json should have object form after upgrade");
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_features_merges_with_existing_features() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        // Add with dx11
+        handle_add(&[String::from("directxtex")], Some("dx11"), false)?;
+
+        // Add again with dx12 — should merge features
+        handle_add(&[String::from("directxtex")], Some("dx12"), false)?;
+
+        let t = read_triton(root);
+        match t.deps.iter().find(|d| d.name() == "directxtex") {
+            Some(DepSpec::Detailed(d)) => {
+                assert!(d.features.contains(&"dx11".to_string()), "should still have dx11");
+                assert!(d.features.contains(&"dx12".to_string()), "should also have dx12");
+            }
+            other => panic!("expected DepDetailed with merged features, got: {:?}", other),
+        }
+
+        // vcpkg.json should have both features
+        let mani = read_vcpkg(root);
+        let deps = mani["dependencies"].as_array().unwrap();
+        let dtex = deps.iter().find(|v| {
+            v.get("name").and_then(|n| n.as_str()) == Some("directxtex")
+        }).expect("directxtex object should exist in vcpkg.json");
+        let features = dtex["features"].as_array().unwrap();
+        let feature_strs: Vec<&str> = features.iter().filter_map(|f| f.as_str()).collect();
+        assert!(feature_strs.contains(&"dx11"), "vcpkg.json should have dx11");
+        assert!(feature_strs.contains(&"dx12"), "vcpkg.json should have dx12");
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_same_dep_twice_is_idempotent_in_triton_json() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        handle_add(&[String::from("directxtex")], Some("dx12"), false)?;
+        handle_add(&[String::from("directxtex")], Some("dx12"), false)?;
+
+        let t = read_triton(root);
+        let count = t.deps.iter().filter(|d| d.name() == "directxtex").count();
+        assert_eq!(count, 1, "should have exactly 1 directxtex dep, got {}", count);
+
+        Ok(())
+    })
+}
+
+#[test]
+#[serial]
+fn add_same_dep_twice_with_link_is_idempotent() -> Result<()> {
+    with_temp_dir(|root| {
+        init_min_triton_json(root);
+        init_empty_vcpkg_manifest(root);
+        stub_vcpkg(&root.join("bin"));
+
+        handle_add(&[String::from("glm:App")], None, false)?;
+        handle_add(&[String::from("glm:App")], None, false)?;
+
+        let t = read_triton(root);
+        // Only 1 dep entry
+        let dep_count = t.deps.iter().filter(|d| d.name() == "glm").count();
+        assert_eq!(dep_count, 1, "should have exactly 1 glm dep");
+
+        // Only 1 link entry in App
+        let app = t.components.get("App").expect("App should exist");
+        let link_count = app.link.iter().filter(|e| e.normalize().0 == "glm").count();
+        assert_eq!(link_count, 1, "App should have exactly 1 glm link entry");
+
+        // vcpkg.json should have exactly 1 glm entry
+        let mani = read_vcpkg(root);
+        let deps = mani["dependencies"].as_array().unwrap();
+        let glm_count = deps.iter().filter(|v| v.as_str() == Some("glm")).count();
+        assert_eq!(glm_count, 1, "vcpkg.json should have exactly 1 glm");
+
+        Ok(())
+    })
+}

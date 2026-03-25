@@ -246,3 +246,96 @@ fn remove_from_missing_component_returns_error() {
         "expected 'No such component' error, got: {msg}"
     );
 }
+
+#[test]
+#[serial]
+fn remove_twice_is_idempotent() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    std::env::set_current_dir(root).unwrap();
+
+    let mut meta = TritonRoot {
+        app_name: "demo".into(),
+        generator: "Ninja".into(),
+        cxx_std: "20".into(),
+        deps: vec![DepSpec::Simple("glm".into()), DepSpec::Simple("sdl2".into())],
+        components: Default::default(),
+        scripts: HashMap::default(),
+    };
+    meta.components.insert(
+        "App".into(),
+        TritonComponent {
+            kind: "exe".into(),
+            link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())],
+            ..Default::default()
+        },
+    );
+
+    seed_project(root, &meta);
+    mk_component_dirs(root, "App");
+
+    // Remove glm twice — second call should be a no-op, not an error
+    handle_remove("glm", None, None, false).unwrap();
+    handle_remove("glm", None, None, false).unwrap();
+
+    let after: TritonRoot = read_json("triton.json").unwrap();
+    assert!(!after.deps.iter().any(|d| d.name() == "glm"), "glm should be gone");
+    assert!(after.deps.iter().any(|d| d.name() == "sdl2"), "sdl2 should remain");
+
+    let app = after.components.get("App").unwrap();
+    assert!(!app.link.iter().any(|e| e.normalize().0 == "glm"), "glm link should be gone");
+    assert!(app.link.iter().any(|e| e.normalize().0 == "sdl2"), "sdl2 link should remain");
+}
+
+#[test]
+#[serial]
+fn remove_preserves_features_in_vcpkg_json() {
+    let td = tempdir().unwrap();
+    let root = td.path();
+    std::env::set_current_dir(root).unwrap();
+
+    let mut meta = TritonRoot {
+        app_name: "demo".into(),
+        generator: "Ninja".into(),
+        cxx_std: "20".into(),
+        deps: vec![
+            DepSpec::Simple("glm".into()),
+            DepSpec::Detailed(triton::models::DepDetailed {
+                name: "directxtex".into(),
+                features: vec!["dx12".into()],
+                package: Some("directxtex".into()),
+                ..Default::default()
+            }),
+        ],
+        components: Default::default(),
+        scripts: HashMap::default(),
+    };
+    meta.components.insert("App".into(), TritonComponent {
+        kind: "exe".into(),
+        link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("directxtex".into())],
+        ..Default::default()
+    });
+
+    seed_project(root, &meta);
+    mk_component_dirs(root, "App");
+
+    // Remove glm, directxtex should keep its features in vcpkg.json
+    handle_remove("glm", None, None, false).unwrap();
+
+    let vcpkg_raw = fs::read_to_string("vcpkg.json").unwrap();
+    let vcpkg: serde_json::Value = serde_json::from_str(&vcpkg_raw).unwrap();
+    let deps = vcpkg["dependencies"].as_array().unwrap();
+
+    // directxtex should be object with features
+    let dtex = deps.iter().find(|v| {
+        v.get("name").and_then(|n| n.as_str()) == Some("directxtex")
+    });
+    assert!(dtex.is_some(), "directxtex should remain in vcpkg.json as object");
+    let feats = dtex.unwrap()["features"].as_array().unwrap();
+    assert!(feats.iter().any(|f| f.as_str() == Some("dx12")),
+        "dx12 feature should be preserved in vcpkg.json");
+
+    // glm should be gone
+    assert!(!deps.iter().any(|v| v.as_str() == Some("glm")),
+        "glm should be removed from vcpkg.json");
+}

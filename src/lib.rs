@@ -15,6 +15,8 @@ pub mod commands {
     pub mod generate;
     pub mod install;
     pub mod find_target;
+    pub mod unlink;
+    pub mod remove_component;
 
     pub use add::handle_add;
     pub use build::handle_build;
@@ -26,9 +28,11 @@ pub mod commands {
     pub use testcmd::handle_test;
     pub use install::handle_install;
     pub use find_target::handle_find_target;
+    pub use unlink::handle_unlink;
+    pub use remove_component::handle_remove_component;
 }
 
 pub use commands::{
     handle_add, handle_build, handle_init, handle_link, handle_remove,
-    handle_script, handle_test, handle_install,
+    handle_remove_component, handle_script, handle_test, handle_install, handle_unlink,
 };
