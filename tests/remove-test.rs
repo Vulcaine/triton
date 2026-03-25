@@ -53,21 +53,11 @@ fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
     };
     meta.components.insert(
         "A".into(),
-        TritonComponent {
-            kind: "lib".into(),
-            link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())],
-            defines: vec![],
-            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
-        },
+        TritonComponent { kind: "lib".into(), link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())], ..Default::default() },
     );
     meta.components.insert(
         "B".into(),
-        TritonComponent {
-            kind: "lib".into(),
-            link: vec![LinkEntry::Name("glm".into())],
-            defines: vec![],
-            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
-        },
+        TritonComponent { kind: "lib".into(), link: vec![LinkEntry::Name("glm".into())], ..Default::default() },
     );
 
     seed_project(root, &meta);
@@ -123,21 +113,11 @@ fn remove_vcpkg_dep_globally_updates_manifest_and_unlinks_everywhere() {
     };
     meta.components.insert(
         "Core".into(),
-        TritonComponent {
-            kind: "lib".into(),
-            link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())],
-            defines: vec![],
-            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
-        },
+        TritonComponent { kind: "lib".into(), link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())], ..Default::default() },
     );
     meta.components.insert(
         "App".into(),
-        TritonComponent {
-            kind: "exe".into(),
-            link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())],
-            defines: vec![],
-            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
-        },
+        TritonComponent { kind: "exe".into(), link: vec![LinkEntry::Name("glm".into()), LinkEntry::Name("sdl2".into())], ..Default::default() },
     );
 
     seed_project(root, &meta);
@@ -200,12 +180,7 @@ fn remove_git_dep_globally_unlinks_everywhere_and_prunes_third_party_if_unused()
     };
     meta.components.insert(
         "Engine".into(),
-        TritonComponent {
-            kind: "lib".into(),
-            link: vec![LinkEntry::Name("filament".into())],
-            defines: vec![],
-            exports: vec![], resources: vec![], link_options: Default::default(), vendor_libs: Default::default(), assets: vec![],
-        },
+        TritonComponent { kind: "lib".into(), link: vec![LinkEntry::Name("filament".into())], ..Default::default() },
     );
 
     seed_project(root, &meta);

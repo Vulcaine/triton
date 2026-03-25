@@ -6,7 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::models::{DepSpec, TritonComponent, TritonRoot};
+use crate::models::{TritonComponent, TritonRoot};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Change {
@@ -122,19 +122,11 @@ pub fn ensure_component_scaffold(name: &str) -> anyhow::Result<()> {
 
 
 pub fn is_dep(root: &TritonRoot, name: &str) -> bool {
-    root.deps.iter().any(|d| match d {
-        DepSpec::Simple(n) => n == name,
-        DepSpec::Git(g) => g.name == name,
-        DepSpec::Detailed(dd) => dd.name == name,
-    })
+    root.deps.iter().any(|d| d.name() == name)
 }
 
 pub fn is_dep_case_insensitive(root: &TritonRoot, name: &str) -> bool {
-    root.deps.iter().any(|d| match d {
-        DepSpec::Simple(n) => n.eq_ignore_ascii_case(name),
-        DepSpec::Git(g) => g.name.eq_ignore_ascii_case(name),
-        DepSpec::Detailed(dd) => dd.name.eq_ignore_ascii_case(name),
-    })
+    root.deps.iter().any(|d| d.name().eq_ignore_ascii_case(name))
 }
 
 pub fn has_link_to_name(comp: &TritonComponent, want: &str) -> bool {

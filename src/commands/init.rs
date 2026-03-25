@@ -110,13 +110,7 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
                 .entry(app_name.clone())
                 .or_insert_with(|| TritonComponent {
                     kind: "exe".into(),
-                    link: vec![],
-                    defines: vec![],
-                    exports: vec![],
-                    resources: vec![],
-                    link_options: Default::default(),
-                    vendor_libs: Default::default(),
-                    assets: vec![],
+                    ..Default::default()
                 });
         }
     }
@@ -142,13 +136,7 @@ int main() { std::cout << "Hello from triton app!\n"; return 0; }
                     .entry(name)
                     .or_insert_with(|| TritonComponent {
                         kind: kind.into(),
-                        link: vec![],
-                        defines: vec![],
-                        exports: vec![],
-                        resources: vec![],
-                        link_options: Default::default(),
-                        vendor_libs: Default::default(),
-                        assets: vec![],
+                        ..Default::default()
                     });
             }
         }
@@ -194,12 +182,7 @@ int main(int argc, char **argv) {
         .or_insert_with(|| TritonComponent {
             kind: "exe".into(),
             link: vec![LinkEntry::Name("GTest".into())],
-            defines: vec![],
-            exports: vec![],
-            resources: vec![],
-            link_options: Default::default(),
-            vendor_libs: Default::default(),
-            assets: vec![],
+            ..Default::default()
         });
 
     if !root

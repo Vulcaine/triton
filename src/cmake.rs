@@ -571,6 +571,16 @@ fn gen_component_resources_lines(comp: &TritonComponent) -> Vec<String> {
     lines
 }
 
+/// Map a triton platform name to a CMake conditional expression.
+fn platform_to_cmake_condition(platform: &str) -> String {
+    match platform.to_ascii_lowercase().as_str() {
+        "linux"   => "UNIX AND NOT APPLE".to_string(),
+        "macos"   => "APPLE".to_string(),
+        "windows" => "WIN32".to_string(),
+        other     => other.to_string(),
+    }
+}
+
 fn gen_component_vendor_libs_lines(comp: &TritonComponent) -> Vec<String> {
     use crate::models::VendorLibs;
     match &comp.vendor_libs {
@@ -589,12 +599,7 @@ fn gen_component_vendor_libs_lines(comp: &TritonComponent) -> Vec<String> {
             let mut lines = vec![];
             for (platform, libs) in map {
                 if libs.is_empty() { continue; }
-                let condition_str = match platform.to_ascii_lowercase().as_str() {
-                    "linux"   => "UNIX AND NOT APPLE".to_string(),
-                    "macos"   => "APPLE".to_string(),
-                    "windows" => "WIN32".to_string(),
-                    other     => other.to_string(),
-                };
+                let condition_str = platform_to_cmake_condition(platform);
                 let paths: Vec<String> = libs.iter()
                     .map(|p| format!("    \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\"", p))
                     .collect();
@@ -645,14 +650,8 @@ fn gen_component_link_options_lines(comp: &TritonComponent) -> Vec<String> {
             for (platform, opts) in map {
                 if opts.is_empty() { continue; }
                 let joined = opts.iter().map(|o| cmake_quote(o)).collect::<Vec<_>>().join(" ");
-                let condition_str = match platform.to_ascii_lowercase().as_str() {
-                    "linux"   => "UNIX AND NOT APPLE".to_string(),
-                    "macos"   => "APPLE".to_string(),
-                    "windows" => "WIN32".to_string(),
-                    other     => other.to_string(),
-                };
-                let condition = condition_str.as_str();
-                lines.push(format!("if({condition})"));
+                let condition_str = platform_to_cmake_condition(platform);
+                lines.push(format!("if({})", condition_str));
                 lines.push(format!("  target_link_options(${{_comp_name}} PRIVATE {})", joined));
                 lines.push("endif()".into());
             }

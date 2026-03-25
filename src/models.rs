@@ -30,6 +30,17 @@ pub enum DepSpec {
     Detailed(DepDetailed),
 }
 
+impl DepSpec {
+    /// Return the canonical name of this dependency.
+    pub fn name(&self) -> &str {
+        match self {
+            DepSpec::Simple(n) => n,
+            DepSpec::Git(g) => &g.name,
+            DepSpec::Detailed(d) => &d.name,
+        }
+    }
+}
+
 /// Git repository dependency
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitDep {
