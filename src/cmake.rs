@@ -835,6 +835,69 @@ fn fix_target_runtime_dlls(base: &str) -> String {
     }
 }
 
+/// For exe components, collect vendor DLLs from all transitively-linked lib components
+/// and generate POST_BUILD copy commands so the DLLs end up next to the exe.
+fn gen_transitive_vendor_dll_copies(_name: &str, root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
+    use crate::models::VendorLibs;
+
+    // Only exe components need DLLs copied next to them
+    if comp.kind != "exe" { return vec![]; }
+
+    // BFS: collect all transitively-linked component names
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited = std::collections::HashSet::new();
+    for ent in &comp.link {
+        let (n, _) = ent.normalize();
+        if root.components.contains_key(&n) {
+            queue.push_back(n);
+        }
+    }
+    while let Some(cn) = queue.pop_front() {
+        if !visited.insert(cn.clone()) { continue; }
+        if let Some(c) = root.components.get(&cn) {
+            for ent in &c.link {
+                let (n, _) = ent.normalize();
+                if root.components.contains_key(&n) && !visited.contains(&n) {
+                    queue.push_back(n);
+                }
+            }
+        }
+    }
+
+    // Collect Windows vendor DLLs from all visited lib components
+    let mut lines = vec![];
+    for comp_name in &visited {
+        let c = match root.components.get(comp_name) {
+            Some(c) => c,
+            None => continue,
+        };
+        let win_libs = match &c.vendor_libs {
+            VendorLibs::PerPlatform(map) => {
+                map.get("windows").or_else(|| map.get("Windows")).cloned().unwrap_or_default()
+            }
+            VendorLibs::All(libs) => libs.clone(),
+            VendorLibs::None => continue,
+        };
+        for lib_path in &win_libs {
+            if lib_path.ends_with(".lib") {
+                let dll_path = format!("{}dll", &lib_path[..lib_path.len() - 3]);
+                let full_dll = format!("${{CMAKE_SOURCE_DIR}}/{}/{}",  comp_name, dll_path);
+                lines.push(format!("if(WIN32)"));
+                lines.push(format!(
+                    "  if(EXISTS \"{}\")", full_dll
+                ));
+                lines.push(format!(
+                    "    add_custom_command(TARGET ${{_comp_name}} POST_BUILD COMMAND ${{CMAKE_COMMAND}} -E copy_if_different \"{}\" \"$<TARGET_FILE_DIR:${{_comp_name}}>\")",
+                    full_dll
+                ));
+                lines.push("  endif()".into());
+                lines.push("endif()".into());
+            }
+        }
+    }
+    lines
+}
+
 /// Build the managed dependency block that goes between the triton:deps begin/end markers.
 fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
     let mut dep_lines: Vec<String> = vec![
@@ -895,6 +958,16 @@ fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonCompon
             dep_lines.push("".into());
         }
         dep_lines.extend(asset_lines);
+    }
+
+    // For exe components: copy vendor DLLs from transitive lib dependencies
+    let dll_lines = gen_transitive_vendor_dll_copies(name, root, comp);
+    if !dll_lines.is_empty() {
+        if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
+        dep_lines.push("# --- triton: copy vendor DLLs from lib dependencies ---".into());
+        dep_lines.extend(dll_lines);
     }
 
     dep_lines
