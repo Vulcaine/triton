@@ -32,16 +32,7 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
         if !root.components.contains_key(name) {
             root.components.insert(
                 name.to_string(),
-                TritonComponent {
-                    kind: "lib".into(),
-                    link: vec![],
-                    defines: vec![],
-                    exports: vec![],
-                    resources: vec![],
-                    link_options: Default::default(),
-                    vendor_libs: Default::default(),
-                    assets: vec![],
-                },
+                TritonComponent { kind: "lib".into(), ..Default::default() },
             );
         }
         ensure_component_scaffold(name)

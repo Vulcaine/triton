@@ -83,6 +83,78 @@ fn normalize_windows_path(root_dir: &Path, s: &str) -> String {
     fixed
 }
 
+/// Convert a single POSIX-style PATH entry (e.g. `/c/Program Files/dotnet`)
+/// to its Windows equivalent (`C:\Program Files\dotnet`).
+/// Returns the original string unchanged if it doesn't look like a MinGW path.
+#[cfg(windows)]
+fn posix_to_win_path_entry(entry: &str) -> String {
+    let bytes = entry.as_bytes();
+    // MinGW/Git Bash uses `/c/...` for `C:\...`
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[2] == b'/' {
+        let drive = bytes[1].to_ascii_uppercase() as char;
+        if drive.is_ascii_alphabetic() {
+            return format!("{}:{}", drive, entry[2..].replace('/', r"\"));
+        }
+    }
+    // Handle bare `/c` (drive root without trailing slash)
+    if bytes.len() == 2 && bytes[0] == b'/' {
+        let drive = bytes[1].to_ascii_uppercase() as char;
+        if drive.is_ascii_alphabetic() {
+            return format!("{}:\\", drive);
+        }
+    }
+    entry.to_string()
+}
+
+/// Split a hybrid PATH (mix of `;`-separated Windows entries and `:`-separated
+/// POSIX entries from MinGW/Git Bash) into individual entries.
+///
+/// The tricky part: `:` is both a POSIX path separator AND part of Windows
+/// drive letters (e.g. `C:\foo`). Strategy:
+/// 1. Split on `;` first (always a separator)
+/// 2. For each fragment, if it contains `:` that looks like POSIX separators
+///    (not `X:\ ` drive-letter patterns), split those too.
+#[cfg(windows)]
+fn split_hybrid_path(path: &str) -> Vec<&str> {
+    let mut entries = Vec::new();
+    for fragment in path.split(';') {
+        if fragment.is_empty() {
+            continue;
+        }
+        // If fragment starts with a drive letter like `C:\`, it's a single Windows path
+        let bytes = fragment.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/')
+        {
+            entries.push(fragment);
+            continue;
+        }
+        // Otherwise split on `:` (POSIX separator)
+        for part in fragment.split(':') {
+            if !part.is_empty() {
+                entries.push(part);
+            }
+        }
+    }
+    entries
+}
+
+/// Normalize the PATH environment variable so that POSIX-style entries
+/// (from MinGW/Git Bash) are converted to Windows format.
+/// This is needed when spawning `cmd.exe` from a bash-launched Rust process,
+/// because cmd.exe cannot resolve `/c/Program Files/dotnet` style paths.
+#[cfg(windows)]
+fn normalize_path_for_cmd() -> String {
+    let path = env::var("PATH").unwrap_or_default();
+    split_hybrid_path(&path)
+        .into_iter()
+        .map(|e| posix_to_win_path_entry(e))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 #[cfg(windows)]
 fn path_join_has_exe(dir: &str, exe: &str) -> Option<String> {
     use std::path::PathBuf;
@@ -289,6 +361,7 @@ pub fn handle_script(tokens: &[String]) -> Result<()> {
                 .arg("/C")
                 .arg(&merged)
                 .current_dir(&cwd)
+                .env("PATH", normalize_path_for_cmd())
                 .status()
                 .with_context(|| format!("Failed to launch cmd.exe for script {}", script_name))?;
 
@@ -323,6 +396,7 @@ pub fn handle_script(tokens: &[String]) -> Result<()> {
                         .arg("/C")
                         .arg(&merged)
                         .current_dir(&cwd)
+                        .env("PATH", normalize_path_for_cmd())
                         .status()
                         .with_context(|| format!("Failed to launch cmd.exe for script {}", script_name))?;
                     if !status.success() {

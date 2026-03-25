@@ -236,7 +236,18 @@ Please specify an explicit mapping in triton.json:
 
     string(REGEX REPLACE "[^A-Za-z0-9]" "_" _pfx "${pkg}")
     string(TOUPPER "${_pfx}" _PFX)
-    _triton_make_iface_from_module_vars(_synth "${pkg}" "${_PFX}")
+    # Also try Title Case (e.g. stb -> Stb) for find modules that set Stb_INCLUDE_DIR
+    string(SUBSTRING "${_pfx}" 0 1 _first_char)
+    string(TOUPPER "${_first_char}" _first_upper)
+    string(SUBSTRING "${_pfx}" 1 -1 _rest)
+    set(_TitleCase "${_first_upper}${_rest}")
+    # Try all common variable prefixes
+    set(_synth "")
+    foreach(_try_pfx IN ITEMS "${_PFX}" "${_pfx}" "${_TitleCase}" "${pkg}")
+      if(NOT _synth)
+        _triton_make_iface_from_module_vars(_synth "${pkg}" "${_try_pfx}")
+      endif()
+    endforeach()
     if(_synth)
       target_link_libraries(${tgt} PRIVATE ${_synth})
       return()
