@@ -105,15 +105,13 @@ fn parse_pkg_and_component<'a>(pkg: &'a str, component_opt: Option<&'a str>) -> 
     (pkg, component_opt.map(|s| s.trim()).filter(|s| !s.is_empty()))
 }
 
-/// Ensure component dirs and CMakeLists exist.
+/// Ensure component dirs, placeholder files, and CMakeLists exist.
 fn ensure_component_scaffold(name: &str, txn: &mut FsTxn) -> Result<()> {
-    let base = format!("components/{name}");
-    fs::create_dir_all(format!("{base}/src"))?;
-    fs::create_dir_all(format!("{base}/include"))?;
+    // Delegate to shared scaffold for directory structure + placeholder files
+    crate::util::ensure_component_scaffold(name)?;
 
-    let cm = format!("{base}/CMakeLists.txt");
+    let cm = format!("components/{name}/CMakeLists.txt");
     if !Path::new(&cm).exists() {
-        // minimal template
         let body = r#"cmake_minimum_required(VERSION 3.25)
 get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
 add_library(${_comp_name})
