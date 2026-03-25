@@ -6,24 +6,19 @@ use std::{env, fs, path::Path};
 
 use anyhow::Result;
 use serial_test::serial;
-use tempfile::tempdir;
+
 
 use triton::cmake::{effective_cmake_version, rewrite_component_cmake};
 use triton::commands::{handle_add, handle_generate, handle_init, handle_remove};
 use triton::models::*;
-use triton::util::{read_json, write_json_pretty_changed};
+use triton::util::write_json_pretty_changed;
 
 mod test_utils;
-use test_utils::copy_offline_vcpkg_to;
+use test_utils::{copy_offline_vcpkg_to, write_file, read_triton, read_vcpkg, stub_vcpkg, with_temp_dir};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn write_file(path: impl AsRef<Path>, s: &str) {
-    fs::create_dir_all(path.as_ref().parent().unwrap()).ok();
-    fs::write(path, s).unwrap();
-}
 
 /// Seed a minimal triton.json + vcpkg.json so that commands that read them
 /// can operate without a prior `handle_init`.
@@ -43,89 +38,6 @@ fn seed_vcpkg_json(root: &Path, app_name: &str) {
             app_name.to_lowercase()
         ),
     );
-}
-
-fn read_triton(root: &Path) -> TritonRoot {
-    read_json(root.join("triton.json")).unwrap()
-}
-
-fn read_vcpkg(root: &Path) -> serde_json::Value {
-    read_json(root.join("vcpkg.json")).unwrap()
-}
-
-/// Create a no-op vcpkg stub and wire it into the environment so that
-/// `handle_add` for vcpkg deps does not attempt a real install.
-fn stub_vcpkg(bin_dir: &Path) -> std::path::PathBuf {
-    fs::create_dir_all(bin_dir).unwrap();
-    #[cfg(windows)]
-    let path = {
-        let p = bin_dir.join("vcpkg.bat");
-        write_file(&p, "@echo off\r\nexit /B 0\r\n");
-        p
-    };
-    #[cfg(not(windows))]
-    let path = {
-        let p = bin_dir.join("vcpkg");
-        write_file(&p, "#!/usr/bin/env bash\nexit 0\n");
-        let _ = std::process::Command::new("chmod")
-            .args(["+x", p.to_str().unwrap()])
-            .status();
-        p
-    };
-    env::set_var("TRITON_VCPKG_EXE", &path);
-    env::set_var("VCPKG_EXE", &path);
-
-    let old = env::var_os("PATH");
-    let mut newp = bin_dir.to_path_buf().into_os_string().into_string().unwrap();
-    if let Some(old_s) = old.as_ref().and_then(|o| o.to_str().map(|s| s.to_string())) {
-        #[cfg(windows)]
-        {
-            if !old_s.is_empty() {
-                newp.push(';');
-                newp.push_str(&old_s);
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            if !old_s.is_empty() {
-                newp.push(':');
-                newp.push_str(&old_s);
-            }
-        }
-    }
-    env::set_var("PATH", &newp);
-    path
-}
-
-/// Run a closure inside a fresh temp dir, saving and restoring cwd + env vars.
-fn with_temp_dir<F: FnOnce(&Path) -> Result<()>>(f: F) -> Result<()> {
-    let t = tempdir()?;
-    let root = t.path().to_path_buf();
-
-    let old_dir = env::current_dir()?;
-    let old_path = env::var_os("PATH");
-    let old_vcpkg_exe = env::var_os("VCPKG_EXE");
-    let old_triton_vcpkg_exe = env::var_os("TRITON_VCPKG_EXE");
-
-    env::set_current_dir(&root)?;
-    let res = f(&root);
-
-    // Restore environment
-    match old_path {
-        Some(v) => env::set_var("PATH", v),
-        None => env::remove_var("PATH"),
-    }
-    match old_vcpkg_exe {
-        Some(v) => env::set_var("VCPKG_EXE", v),
-        None => env::remove_var("VCPKG_EXE"),
-    }
-    match old_triton_vcpkg_exe {
-        Some(v) => env::set_var("TRITON_VCPKG_EXE", v),
-        None => env::remove_var("TRITON_VCPKG_EXE"),
-    }
-    env::remove_var("TEST_OLD_PATH");
-    env::set_current_dir(old_dir)?;
-    res
 }
 
 /// Create on-disk component dirs so CMake rewriting finds them.

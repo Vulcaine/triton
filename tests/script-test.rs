@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::Write;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,13 +16,8 @@ fn unique_temp_dir() -> PathBuf {
     p
 }
 
-fn write_file(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    let mut f = fs::File::create(path).unwrap();
-    f.write_all(contents.as_bytes()).unwrap();
-}
+mod test_utils;
+use test_utils::write_file;
 
 #[cfg(windows)]
 fn make_script(dir: &Path, name: &str) -> PathBuf {

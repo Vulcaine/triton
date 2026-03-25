@@ -12,7 +12,7 @@ use triton::models::*;
 use triton::util::{read_json, write_json_pretty_changed};
 
 mod test_utils;
-use test_utils::copy_offline_vcpkg_to;
+use test_utils::{copy_offline_vcpkg_to, write_file, write_minimal_resources};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -20,61 +20,6 @@ use test_utils::copy_offline_vcpkg_to;
 
 fn assert_exists(p: &Path) {
     assert!(p.exists(), "expected path to exist: {}", p.display());
-}
-
-fn write_file(path: impl AsRef<Path>, s: &str) {
-    fs::create_dir_all(path.as_ref().parent().unwrap()).ok();
-    fs::write(path, s).unwrap();
-}
-
-/// Minimal resources directory needed by the cmake template engine.
-fn write_minimal_resources(root: &Path) {
-    let res = root.join("resources");
-    fs::create_dir_all(&res).unwrap();
-
-    fs::write(
-        res.join("cmake_template.cmake"),
-        r#"cmake_minimum_required(VERSION 3.25)
-get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
-
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
-  add_executable(${_comp_name})
-  set(_is_exe ON)
-else()
-  add_library(${_comp_name})
-  set(_is_exe OFF)
-endif()
-
-if(_is_exe)
-  target_include_directories(${_comp_name} PRIVATE "include")
-else()
-  target_include_directories(${_comp_name} PUBLIC "include")
-endif()
-
-# ## triton:deps begin
-# ## triton:deps end
-"#,
-    )
-    .unwrap();
-
-    fs::write(res.join("cmake_root_template.cmake"), "# (helpers stub)\n").unwrap();
-
-    fs::write(
-        res.join("cmake_presets_template.json"),
-        r#"{
-  "version": 6,
-  "configurePresets": [
-    {
-      "name": "debug",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/../build/debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-    }
-  ],
-  "buildPresets": [ { "name": "debug", "configurePreset": "debug" } ]
-}"#,
-    )
-    .unwrap();
 }
 
 /// Create a component directory on disk with a marker CMakeLists.txt.

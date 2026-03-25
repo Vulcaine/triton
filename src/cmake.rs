@@ -762,26 +762,8 @@ fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> {
 }
 
 
-pub fn rewrite_component_cmake(
-    name: &str,
-    root: &TritonRoot,
-    comp: &TritonComponent,
-    cmake_ver: (u32, u32, u32),
-) -> Result<()> {
-    let comp_dir = Path::new("components").join(name);
-    if !comp_dir.is_dir() {
-        return Ok(());
-    }
-
-    let path = comp_dir.join("CMakeLists.txt");
-    let path_str = path.to_string_lossy().to_string();
-
-    // Load file or create from template
-    let mut base = read_to_string_opt(&path_str).unwrap_or_else(|| {
-        crate::templates::component_cmakelists(name.eq_ignore_ascii_case("tests"))
-    });
-
-    // --- Ensure cmake_minimum_required at very top ---
+/// Ensure the first line is a `cmake_minimum_required(VERSION ...)` directive.
+fn ensure_cmake_version_header(base: &str, cmake_ver: (u32, u32, u32)) -> String {
     let (maj, min, pat) = cmake_ver;
     let required_line = format!("cmake_minimum_required(VERSION {}.{}.{})", maj, min, pat);
 
@@ -795,9 +777,11 @@ pub fn rewrite_component_cmake(
         lines.insert(0, required_line.clone());
         lines.insert(1, String::new());
     }
-    base = lines.join("\n");
+    lines.join("\n")
+}
 
-    // --- Normalize include dirs ---
+/// Normalize include-directory blocks so both exe and lib targets work correctly.
+fn normalize_include_dirs(base: &str) -> String {
     let canonical = r#"if(_is_exe)
   target_include_directories(${_comp_name} PRIVATE "include")
 else()
@@ -814,19 +798,23 @@ else()
   target_include_directories(${_comp_name} PUBLIC "include")
 endif()"#;
 
-    let mut base_fixed = base.clone();
     if !base.contains("if(_is_exe)")
         && base.contains(r#"target_include_directories(${_comp_name} PRIVATE "include")"#)
     {
-        base_fixed = base.replace(
+        base.replace(
             r#"target_include_directories(${_comp_name} PRIVATE "include")"#,
             canonical,
-        );
+        )
     } else if base.contains(duplicated) {
-        base_fixed = base.replace(duplicated, canonical);
+        base.replace(duplicated, canonical)
+    } else {
+        base.to_string()
     }
+}
 
-    // --- Fix TARGET_RUNTIME_DLLS copy (no-op when empty) ---
+/// Replace the naive TARGET_RUNTIME_DLLS copy command with one that is a no-op
+/// when the generator expression expands to an empty list.
+fn fix_target_runtime_dlls(base: &str) -> String {
     let old_dll_copy = r#"  add_custom_command(TARGET ${_comp_name} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       $<TARGET_RUNTIME_DLLS:${_comp_name}>
@@ -840,22 +828,16 @@ endif()"#;
       $<$<BOOL:$<TARGET_RUNTIME_DLLS:${_comp_name}>>:$<TARGET_FILE_DIR:${_comp_name}>>
     COMMAND_EXPAND_LISTS
   )"#;
-    if base_fixed.contains(old_dll_copy) {
-        base_fixed = base_fixed.replace(old_dll_copy, new_dll_copy);
+    if base.contains(old_dll_copy) {
+        base.replace(old_dll_copy, new_dll_copy)
+    } else {
+        base.to_string()
     }
+}
 
-    // --- Replace triton deps block ---
-    let begin = "# ## triton:deps begin";
-    let end = "# ## triton:deps end";
-
-    let (pre, post) = match (base_fixed.find(begin), base_fixed.find(end)) {
-        (Some(b), Some(e)) if e > b => {
-            (base_fixed[..b].to_string(), base_fixed[(e + end.len())..].to_string())
-        }
-        _ => (base_fixed, "\n".to_string()),
-    };
-
-    let mut dep_lines = vec![
+/// Build the managed dependency block that goes between the triton:deps begin/end markers.
+fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
+    let mut dep_lines: Vec<String> = vec![
         "# --- triton: resolve local target name ---".into(),
         "if(NOT DEFINED _comp_name)".into(),
         "  get_filename_component(_comp_name \"${CMAKE_CURRENT_SOURCE_DIR}\" NAME)".into(),
@@ -914,6 +896,44 @@ endif()"#;
         }
         dep_lines.extend(asset_lines);
     }
+
+    dep_lines
+}
+
+pub fn rewrite_component_cmake(
+    name: &str,
+    root: &TritonRoot,
+    comp: &TritonComponent,
+    cmake_ver: (u32, u32, u32),
+) -> Result<()> {
+    let comp_dir = Path::new("components").join(name);
+    if !comp_dir.is_dir() {
+        return Ok(());
+    }
+
+    let path = comp_dir.join("CMakeLists.txt");
+    let path_str = path.to_string_lossy().to_string();
+
+    // Load file or create from template
+    let base = read_to_string_opt(&path_str).unwrap_or_else(|| {
+        crate::templates::component_cmakelists(name.eq_ignore_ascii_case("tests"))
+    });
+
+    let base = ensure_cmake_version_header(&base, cmake_ver);
+    let base_fixed = fix_target_runtime_dlls(&normalize_include_dirs(&base));
+
+    // --- Replace triton deps block ---
+    let begin = "# ## triton:deps begin";
+    let end = "# ## triton:deps end";
+
+    let (pre, post) = match (base_fixed.find(begin), base_fixed.find(end)) {
+        (Some(b), Some(e)) if e > b => {
+            (base_fixed[..b].to_string(), base_fixed[(e + end.len())..].to_string())
+        }
+        _ => (base_fixed, "\n".to_string()),
+    };
+
+    let dep_lines = generate_managed_dep_block(name, root, comp);
 
     let mut new_body = String::new();
     new_body.push_str(&pre);

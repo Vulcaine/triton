@@ -12,14 +12,12 @@ use triton::commands::find_target::handle_find_target;
 use triton::models::*;
 use triton::util::*;
 
+mod test_utils;
+use test_utils::write_file;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn write_file(path: impl AsRef<Path>, s: &str) {
-    fs::create_dir_all(path.as_ref().parent().unwrap()).ok();
-    fs::write(path, s).unwrap();
-}
 
 /// Create a fake vcpkg share directory with Config.cmake files.
 fn create_fake_share(root: &Path, triplet: &str, packages: &[&str]) {

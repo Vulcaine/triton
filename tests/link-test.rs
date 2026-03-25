@@ -8,60 +8,8 @@ use triton::handle_link;
 use triton::models::{DepSpec, LinkEntry, TritonComponent, TritonRoot};
 use triton::util::{read_json, write_json_pretty_changed};
 
-/// Write minimal template files under ./resources that the generator expects.
-fn write_minimal_resources(root: &Path) {
-    let res = root.join("resources");
-    fs::create_dir_all(&res).unwrap();
-
-    // Per-component CMake template: must include the managed region markers.
-    fs::write(
-        res.join("cmake_template.cmake"),
-        r#"cmake_minimum_required(VERSION 3.25)
-get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
-
-# Rule: exe if main.cpp exists; else lib
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
-  add_executable(${_comp_name})
-  set(_is_exe ON)
-else()
-  add_library(${_comp_name})
-  set(_is_exe OFF)
-endif()
-
-# Export headers: libs -> PUBLIC, exe -> PRIVATE
-if(_is_exe)
-  target_include_directories(${_comp_name} PRIVATE "include")
-else()
-  target_include_directories(${_comp_name} PUBLIC "include")
-endif()
-
-# ## triton:deps begin
-# ## triton:deps end
-"#,
-    )
-    .unwrap();
-
-    // Root helpers template (the big helper block). For tests a stub is enough.
-    fs::write(res.join("cmake_root_template.cmake"), "# (helpers stub)\n").unwrap();
-
-    // Presets template (not used by these tests but keep it valid).
-    fs::write(
-        res.join("cmake_presets_template.json"),
-        r#"{
-  "version": 6,
-  "configurePresets": [
-    {
-      "name": "debug",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/../build/debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-    }
-  ],
-  "buildPresets": [ { "name": "debug", "configurePreset": "debug" } ]
-}"#,
-    )
-    .unwrap();
-}
+mod test_utils;
+use test_utils::write_minimal_resources;
 
 /// Start a minimal project at `tmp`, with given deps and no components yet.
 fn init_project(tmp: &Path, deps: &[DepSpec]) {
