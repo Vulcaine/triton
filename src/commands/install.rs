@@ -1,20 +1,65 @@
-use anyhow::{Context, Result};
+﻿use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::env;
+use walkdir::WalkDir;
 
-use crate::cmake::detect_vcpkg_triplet;
 use crate::models::{DepDetailed, DepSpec, TritonRoot};
 use crate::util::{
     list_dir_names, match_dep_to_packages, read_json, scan_vcpkg_share_for_configs,
     write_json_pretty_changed,
 };
 
-/// Install all vcpkg deps valid for current host, using the project-local vcpkg binary.
-pub fn handle_install(_root: &TritonRoot, project: &Path, _vcpkg_exe: &PathBuf) -> Result<()> {
-    // ensure vcpkg.json is up-to-date
-    crate::commands::handle_generate()?;
+fn find_tool_dir(project: &Path, tool_name: &str) -> Option<PathBuf> {
+    let tools_dir = project.join("vcpkg").join("downloads").join("tools");
+    if !tools_dir.is_dir() {
+        return None;
+    }
 
-    let triplet = detect_vcpkg_triplet();
+    WalkDir::new(&tools_dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_type().is_file() && e.file_name().to_string_lossy().eq_ignore_ascii_case(tool_name))
+        .and_then(|e| e.path().parent().map(|p| p.to_path_buf()))
+}
+
+fn build_vcpkg_path(project: &Path) -> Option<std::ffi::OsString> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if cfg!(windows) {
+        if let Some(dir) = find_tool_dir(project, "cmake.exe") {
+            dirs.push(dir);
+        }
+        if let Some(dir) = find_tool_dir(project, "7z.exe") {
+            dirs.push(dir);
+        }
+    } else {
+        if let Some(dir) = find_tool_dir(project, "cmake") {
+            dirs.push(dir);
+        }
+        if let Some(dir) = find_tool_dir(project, "7z") {
+            dirs.push(dir);
+        }
+    }
+
+    if dirs.is_empty() {
+        return None;
+    }
+
+    let existing = env::var_os("PATH").unwrap_or_default();
+    let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
+    for dir in dirs.into_iter().rev() {
+        if !parts.iter().any(|p| p == &dir) {
+            parts.insert(0, dir);
+        }
+    }
+    env::join_paths(parts).ok()
+}
+
+/// Install all vcpkg deps valid for current host, using the project-local vcpkg binary.
+pub fn handle_install(_root: &TritonRoot, project: &Path, _vcpkg_exe: &PathBuf, triplet: &str) -> Result<()> {
+    // ensure vcpkg.json is up-to-date
+    crate::commands::generate::handle_generate_for_triplet(triplet)?;
     // vcpkg manifest mode installs to <project>/vcpkg_installed/<triplet>/
     let share_dir = project
         .join("vcpkg_installed")
@@ -32,12 +77,16 @@ pub fn handle_install(_root: &TritonRoot, project: &Path, _vcpkg_exe: &PathBuf) 
     #[cfg(not(windows))]
     let vcpkg_bin = project.join("vcpkg").join("vcpkg");
 
-    let status = Command::new(&vcpkg_bin)
+    let mut install = Command::new(&vcpkg_bin);
+    install
         .arg("install")
         .arg(format!("--triplet={}", triplet))
-        .current_dir(project)
-        .status()
-        .context("failed to run vcpkg install")?;
+        .current_dir(project);
+    if let Some(path) = build_vcpkg_path(project) {
+        install.env("PATH", path);
+    }
+    install.env("VCPKG_FORCE_SYSTEM_BINARIES", "1");
+    let status = install.status().context("failed to run vcpkg install")?;
 
     if !status.success() {
         anyhow::bail!("vcpkg install failed");
@@ -48,7 +97,7 @@ pub fn handle_install(_root: &TritonRoot, project: &Path, _vcpkg_exe: &PathBuf) 
 
     // Verify requested features actually installed
     let root: TritonRoot = read_json(project.join("triton.json"))?;
-    verify_vcpkg_features(&root, &vcpkg_bin, &triplet)?;
+    verify_vcpkg_features(project, &root, &vcpkg_bin, &triplet)?;
 
     Ok(())
 }
@@ -137,14 +186,14 @@ fn auto_detect_package_names(
     if changed {
         write_json_pretty_changed(project.join("triton.json"), &root)?;
         // Re-run generate so vcpkg.json picks up the package overrides
-        crate::commands::handle_generate()?;
+        crate::commands::generate::handle_generate_for_triplet(_triplet)?;
     }
 
     Ok(())
 }
 
 /// Verify that requested vcpkg features were actually installed.
-fn verify_vcpkg_features(root: &TritonRoot, vcpkg_bin: &Path, triplet: &str) -> Result<()> {
+fn verify_vcpkg_features(project: &Path, root: &TritonRoot, vcpkg_bin: &Path, triplet: &str) -> Result<()> {
     // Collect deps that have features
     let deps_with_features: Vec<(&str, &[String])> = root
         .deps
@@ -162,9 +211,13 @@ fn verify_vcpkg_features(root: &TritonRoot, vcpkg_bin: &Path, triplet: &str) -> 
     }
 
     // Run vcpkg list to get installed packages + features
-    let output = Command::new(vcpkg_bin)
-        .args(["list", &format!("--triplet={}", triplet)])
-        .output();
+    let mut list = Command::new(vcpkg_bin);
+    list.args(["list", &format!("--triplet={}", triplet)]);
+    if let Some(path) = build_vcpkg_path(project) {
+        list.env("PATH", path);
+    }
+    list.env("VCPKG_FORCE_SYSTEM_BINARIES", "1");
+    let output = list.output();
 
     let output = match output {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
@@ -200,3 +253,6 @@ fn verify_vcpkg_features(root: &TritonRoot, vcpkg_bin: &Path, triplet: &str) -> 
 
     Ok(())
 }
+
+
+

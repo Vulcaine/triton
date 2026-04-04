@@ -1,4 +1,4 @@
-use anyhow::Result;
+﻿use anyhow::Result;
 use serde_json::json;
 
 use crate::cmake::{
@@ -9,12 +9,17 @@ use crate::templates::cmake_presets;
 use crate::util::{read_json, validate_triton_root, write_json_pretty_changed, write_text_if_changed};
 
 pub fn handle_generate() -> Result<()> {
+    let trip = detect_vcpkg_triplet();
+    handle_generate_for_triplet(&trip)
+}
+
+pub fn handle_generate_for_triplet(trip: &str) -> Result<()> {
     eprintln!("Regenerating project CMake + vcpkg manifest...");
     let mut root: TritonRoot = read_json("triton.json")?;
 
-    // Fix malformed deps (e.g. "pkg[feature]" strings → Detailed)
+    // Fix malformed deps (e.g. "pkg[feature]" strings â†’ Detailed)
     let mut fixed = fix_malformed_deps(&mut root);
-    // Fix malformed link entries (e.g. "pkg[feature]" → "pkg")
+    // Fix malformed link entries (e.g. "pkg[feature]" â†’ "pkg")
     fixed |= fix_malformed_links(&mut root);
     // Dedup deps by name (keep last occurrence, which is usually the most complete)
     let deduped = dedup_deps(&mut root);
@@ -33,7 +38,6 @@ pub fn handle_generate() -> Result<()> {
     regenerate_root_cmake(&root)?;
 
     // --- regenerate CMakePresets.json ---
-    let trip = detect_vcpkg_triplet();
     eprintln!("detected triplet: {}", trip);
 
     write_text_if_changed(
@@ -91,7 +95,7 @@ pub fn handle_generate() -> Result<()> {
 /// Remove duplicate deps by name, keeping the most detailed version.
 /// A Detailed dep wins over Simple; later entries win for same-type ties.
 /// Fix malformed link entries: strip bracket notation from LinkEntry::Name values.
-/// e.g. "directxtex[dx12]" → "directxtex"
+/// e.g. "directxtex[dx12]" â†’ "directxtex"
 fn fix_malformed_links(root: &mut TritonRoot) -> bool {
     use crate::models::LinkEntry;
     let mut fixed = false;
@@ -100,7 +104,7 @@ fn fix_malformed_links(root: &mut TritonRoot) -> bool {
             if let LinkEntry::Name(s) = link {
                 if let Some(bracket_start) = s.find('[') {
                     let clean = s[..bracket_start].trim().to_string();
-                    eprintln!("Fixed malformed link: \"{}\" → \"{}\"", s, clean);
+                    eprintln!("Fixed malformed link: \"{}\" â†’ \"{}\"", s, clean);
                     *s = clean;
                     fixed = true;
                 }
@@ -116,7 +120,7 @@ fn fix_malformed_links(root: &mut TritonRoot) -> bool {
     fixed
 }
 
-/// Fix malformed deps like "pkg[feature1,feature2]" strings → DepDetailed.
+/// Fix malformed deps like "pkg[feature1,feature2]" strings â†’ DepDetailed.
 /// Returns true if any were fixed.
 fn fix_malformed_deps(root: &mut TritonRoot) -> bool {
     let mut fixed = false;
@@ -130,7 +134,7 @@ fn fix_malformed_deps(root: &mut TritonRoot) -> bool {
                     .map(|f| f.trim().to_string())
                     .filter(|f| !f.is_empty())
                     .collect();
-                eprintln!("Fixed malformed dep: \"{}\" → {{ name: \"{}\", features: {:?} }}", s, name, features);
+                eprintln!("Fixed malformed dep: \"{}\" â†’ {{ name: \"{}\", features: {:?} }}", s, name, features);
                 root.deps[i] = DepSpec::Detailed(DepDetailed {
                     name,
                     features,
@@ -201,3 +205,5 @@ fn dedup_deps(root: &mut TritonRoot) -> bool {
         false
     }
 }
+
+

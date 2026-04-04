@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+﻿use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 
@@ -24,7 +24,7 @@ fn ctest_metadata_present(build_dir: &Path) -> bool {
 pub fn handle_test(path: &str, config: &str) -> Result<()> {
     // In unit tests, we allow skipping the heavy work.
     if std::env::var("TRITON_TEST_MODE").is_ok() {
-        eprintln!("TRITON_TEST_MODE set — skipping actual build and tests");
+        eprintln!("TRITON_TEST_MODE set â€” skipping actual build and tests");
         return Ok(());
     }
 
@@ -48,10 +48,10 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
 
     if needs_build {
         eprintln!(
-            "No usable build with tests for config '{}', running `triton build` first…",
+            "No usable build with tests for config '{}', running `triton build` firstâ€¦",
             cfg
         );
-        handle_build(path, cfg, false, false)?;
+        handle_build(path, None, cfg, false, false)?;
     }
 
     // --- Test selection knobs ------------------------------------------------
@@ -103,3 +103,4 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
 
     Ok(())
 }
+

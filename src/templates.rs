@@ -1,3 +1,4 @@
+﻿use serde_json::json;
 use std::borrow::Cow;
 
 // Embed resources at compile-time (independent of working dir).
@@ -13,13 +14,6 @@ const CMAKE_ROOT_HELPERS_TEMPLATE: &str =
 const CMAKE_COMPONENTS_HEADER_TEMPLATE: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/components_dir_template.cmake"));
 
-const PRESETS_TEMPLATE_JSON: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/cmake_presets_template.json"));
-
-fn ver_parts(ver: (u32, u32, u32)) -> (String, String, String) {
-    (ver.0.to_string(), ver.1.to_string(), ver.2.to_string())
-}
-
 /// Root components CMakeLists header (only cmake_minimum_required()/project()).
 pub fn components_dir_cmakelists() -> String {
     CMAKE_COMPONENTS_HEADER_TEMPLATE.to_string()
@@ -27,7 +21,6 @@ pub fn components_dir_cmakelists() -> String {
 
 /// Per-component CMakeLists template.
 /// Pass `true` for the tests component to use the test-specific template.
-/// `cmake_ver` is (major, minor, patch) to be placed in `cmake_minimum_required(...)`.
 pub fn component_cmakelists(is_test: bool) -> String {
     let tpl: Cow<'static, str> = if is_test {
         Cow::from(TEST_COMPONENT_CMAKE_TEMPLATE)
@@ -41,39 +34,65 @@ pub fn component_cmakelists(is_test: bool) -> String {
 pub fn cmake_root_helpers() -> &'static str {
     CMAKE_ROOT_HELPERS_TEMPLATE
 }
-/// Render CMakePresets.json by replacing placeholders in the JSON template.
-/// Placeholders supported:
-///   {{APP_NAME}}, {{GENERATOR}}, {{TRIPLET}},
-///   {{CMAKE_MAJOR}}, {{CMAKE_MINOR}}, {{CMAKE_PATCH}},
-///   {{CMAKE_MIN_MAJOR}}, {{CMAKE_MIN_MINOR}}, {{CMAKE_MIN_PATCH}}, {{CMAKE_MIN_VERSION}}
+
+/// Render CMakePresets.json for the selected triplet.
 pub fn cmake_presets(
-    app_name: &str,
+    _app_name: &str,
     generator: &str,
     triplet: &str,
     cmake_ver: (u32, u32, u32),
 ) -> String {
-    let (maj, min, pat) = ver_parts(cmake_ver);
-    let maj_str = maj.to_string();
-    let min_str = min.to_string();
-    let pat_str = pat.to_string();
+    let arch = crate::cmake::arch_label_for_triplet(triplet);
+    let (maj, min, pat) = cmake_ver;
 
-    PRESETS_TEMPLATE_JSON
-        .replace("{{APP_NAME}}", app_name)
-        .replace("{{GENERATOR}}", generator)
-        .replace("{{TRIPLET}}", triplet)
-        // Match both quoted and unquoted placeholders
-        .replace("\"{{CMAKE_MAJOR}}\"", &maj_str)
-        .replace("{{CMAKE_MAJOR}}", &maj_str)
-        .replace("\"{{CMAKE_MINOR}}\"", &min_str)
-        .replace("{{CMAKE_MINOR}}", &min_str)
-        .replace("\"{{CMAKE_PATCH}}\"", &pat_str)
-        .replace("{{CMAKE_PATCH}}", &pat_str)
-        // Back-compat names
-        .replace("\"{{CMAKE_MIN_MAJOR}}\"", &maj_str)
-        .replace("{{CMAKE_MIN_MAJOR}}", &maj_str)
-        .replace("\"{{CMAKE_MIN_MINOR}}\"", &min_str)
-        .replace("{{CMAKE_MIN_MINOR}}", &min_str)
-        .replace("\"{{CMAKE_MIN_PATCH}}\"", &pat_str)
-        .replace("{{CMAKE_MIN_PATCH}}", &pat_str)
-        .replace("{{CMAKE_MIN_VERSION}}", &format!("{}.{}.{}", maj, min, pat))
+    let mut debug = json!({
+        "name": "debug",
+        "displayName": format!("Debug ({})", arch),
+        "generator": generator,
+        "binaryDir": format!("${{sourceDir}}/../build/{}/debug", arch),
+        "cacheVariables": {
+            "CMAKE_BUILD_TYPE": "Debug",
+            "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+            "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/../vcpkg/scripts/buildsystems/vcpkg.cmake",
+            "VCPKG_TARGET_TRIPLET": triplet,
+            "VCPKG_MANIFEST_DIR": "${sourceDir}/.."
+        }
+    });
+
+    let mut release = json!({
+        "name": "release",
+        "displayName": format!("Release ({})", arch),
+        "generator": generator,
+        "binaryDir": format!("${{sourceDir}}/../build/{}/release", arch),
+        "cacheVariables": {
+            "CMAKE_BUILD_TYPE": "Release",
+            "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+            "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/../vcpkg/scripts/buildsystems/vcpkg.cmake",
+            "VCPKG_TARGET_TRIPLET": triplet,
+            "VCPKG_MANIFEST_DIR": "${sourceDir}/.."
+        }
+    });
+
+    if cfg!(windows) && generator.to_ascii_lowercase().contains("visual studio") {
+        if let Some(platform) = crate::cmake::cmake_generator_platform_for_triplet(triplet) {
+            let architecture = json!({ "value": platform, "strategy": "set" });
+            debug["architecture"] = architecture.clone();
+            release["architecture"] = architecture;
+        }
+    }
+
+    serde_json::to_string_pretty(&json!({
+        "version": 6,
+        "cmakeMinimumRequired": {
+            "major": maj,
+            "minor": min,
+            "patch": pat
+        },
+        "configurePresets": [debug, release],
+        "buildPresets": [
+            { "name": "debug", "configurePreset": "debug" },
+            { "name": "release", "configurePreset": "release" }
+        ]
+    }))
+    .expect("serializing CMakePresets.json should succeed")
 }

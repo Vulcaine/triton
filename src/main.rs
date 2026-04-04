@@ -1,4 +1,4 @@
-use anyhow::Result;
+﻿use anyhow::Result;
 use clap::Parser;
 
 mod cli;
@@ -11,7 +11,7 @@ mod util;
 
 use cli::{Cli, Commands, CmakeCommands};
 use commands::{
-    handle_add, handle_build, handle_generate, handle_init, handle_link, handle_remove,
+    handle_add, handle_build_with_arch, handle_generate, handle_init, handle_link, handle_remove,
     handle_remove_component, handle_run, handle_script, handle_test, handle_cmake_install,
     handle_find_target, handle_unlink,
 };
@@ -51,8 +51,8 @@ fn main() -> Result<()> {
         Commands::Generate =>
             handle_generate(),
 
-        Commands::Build { path, config, clean, cleanf } =>
-            handle_build(&path, &config, clean, cleanf),
+        Commands::Build { path, component, arch, config, clean, cleanf } =>
+            handle_build_with_arch(&path, opt_str(&component), opt_str(&arch), &config, clean, cleanf),
 
         Commands::Run { path, component, config, args } =>
             handle_run(&path, opt_str(&component), &config, &args),
@@ -95,3 +95,4 @@ fn main() -> Result<()> {
             handle_script(&v),
     }
 }
+

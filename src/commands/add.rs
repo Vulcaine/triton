@@ -112,14 +112,17 @@ fn ensure_component_scaffold(name: &str, txn: &mut FsTxn) -> Result<()> {
 
     let cm = format!("components/{name}/CMakeLists.txt");
     if !Path::new(&cm).exists() {
-        let body = r#"cmake_minimum_required(VERSION 3.25)
-get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
-add_library(${_comp_name})
-target_include_directories(${_comp_name} PUBLIC "include")
-# ## triton:deps begin
-# ## triton:deps end
-"#;
-        txn.write_text(&cm, body)?;
+        let body = format!(
+            "cmake_minimum_required(VERSION 3.25)\n\
+             get_filename_component(_comp_name \"${{CMAKE_CURRENT_SOURCE_DIR}}\" NAME)\n\
+             add_library(${{_comp_name}})\n\
+             target_include_directories(${{_comp_name}} PUBLIC \"include\")\n\
+             {}\n\
+             {}\n",
+            crate::cmake::DEPS_BEGIN,
+            crate::cmake::DEPS_END,
+        );
+        txn.write_text(&cm, &body)?;
     }
     Ok(())
 }

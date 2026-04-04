@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod cmake;
 pub mod models;
 pub mod templates;
@@ -20,6 +21,7 @@ pub mod commands {
 
     pub use add::handle_add;
     pub use build::handle_build;
+    pub use build::handle_build_with_arch;
     pub use init::handle_init;
     pub use generate::handle_generate;
     pub use link::handle_link;
@@ -33,6 +35,6 @@ pub mod commands {
 }
 
 pub use commands::{
-    handle_add, handle_build, handle_init, handle_link, handle_remove,
+    handle_add, handle_build, handle_build_with_arch, handle_init, handle_link, handle_remove,
     handle_remove_component, handle_script, handle_test, handle_install, handle_unlink,
 };

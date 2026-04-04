@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+﻿use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -139,12 +139,12 @@ pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[Str
     };
 
     if need_build {
-        handle_build(&project.display().to_string(), cfg, false, false)?;
+        handle_build(&project.display().to_string(), component, cfg, false, false)?;
     }
 
     // Run (re-find exe in case we just built it)
     let exe_path = find_executable(&project, cfg, component)?;
-    eprintln!("Running {} …", exe_path.display());
+    eprintln!("Running {} â€¦", exe_path.display());
     let status = Command::new(&exe_path)
         .args(args)
         .current_dir(exe_path.parent().unwrap_or(&project))
@@ -155,3 +155,4 @@ pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[Str
     }
     Ok(())
 }
+

@@ -16,7 +16,9 @@ pub mod remove_component;
 pub use init::handle_init;
 pub use add::handle_add;
 pub use remove::handle_remove;
+#[allow(unused_imports)] // used by lib.rs re-export; bin uses handle_build_with_arch directly
 pub use build::handle_build;
+pub use build::handle_build_with_arch;
 pub use run::handle_run;
 pub use link::handle_link;
 pub use script::handle_script;

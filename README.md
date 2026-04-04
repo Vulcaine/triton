@@ -1,4 +1,4 @@
-# Triton
+# Triton — The Build Tool
 
 > **Status:** beta (0.9.0) | **OS:** Windows (tested), Linux/macOS (experimental)
 

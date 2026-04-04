@@ -31,14 +31,20 @@ fn normalize_and_preset_helpers() {
 
 #[test]
 fn build_dir_for_joins_correctly() {
+    use triton::cmake::detect_vcpkg_triplet;
+    use triton::cmake::arch_label_for_triplet;
+
     let root = PathBuf::from("/tmp/myproj");
+    let triplet = detect_vcpkg_triplet();
+    let arch = arch_label_for_triplet(&triplet);
+
     assert_eq!(
         build_dir_for(&root, "debug"),
-        PathBuf::from("/tmp/myproj/build/debug")
+        PathBuf::from(format!("/tmp/myproj/build/{}/debug", arch))
     );
     assert_eq!(
         build_dir_for(&root, "release"),
-        PathBuf::from("/tmp/myproj/build/release")
+        PathBuf::from(format!("/tmp/myproj/build/{}/release", arch))
     );
 }
 
@@ -136,4 +142,19 @@ fn resolve_generator_handles_missing_and_cycles_gracefully() {
     let mut guard = Vec::new();
     // Cycle => None (our resolver bails after 32 hops). Just ensure it doesn't panic.
     assert!(resolve_generator_for_preset(&map, "a", &mut guard).is_none());
+}
+
+#[test]
+fn clap_build_supports_component_flag() {
+    use clap::Parser;
+    use triton::cli::{Cli, Commands};
+
+    let cli = Cli::parse_from(["triton", "build", ".", "--component", "sptconv"]);
+    match cli.command {
+        Commands::Build { path, component, .. } => {
+            assert_eq!(path, ".");
+            assert_eq!(component.as_deref(), Some("sptconv"));
+        }
+        other => panic!("expected build command, got {:?}", std::mem::discriminant(&other)),
+    }
 }

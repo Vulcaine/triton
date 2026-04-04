@@ -1,4 +1,4 @@
-// cli.rs
+﻿// cli.rs
 
 use clap::{Parser, Subcommand};
 
@@ -48,8 +48,8 @@ pub enum Commands {
     /// Unlink A from B (remove the dependency edge).
     ///
     /// Examples:
-    ///   triton unlink sdl2:Game     — Game no longer depends on sdl2
-    ///   triton unlink sdl2          — remove sdl2 from ALL components' link lists
+    ///   triton unlink sdl2:Game     â€” Game no longer depends on sdl2
+    ///   triton unlink sdl2          â€” remove sdl2 from ALL components' link lists
     Unlink {
         edge: String,
         to: Option<String>,
@@ -73,6 +73,10 @@ pub enum Commands {
     Build {
         #[arg(default_value = ".")]
         path: String,
+        #[arg(long)]
+        component: Option<String>,
+        #[arg(long)]
+        arch: Option<String>,
         #[arg(long, default_value = "debug")]
         config: String,
         #[arg(long, conflicts_with = "cleanf")]
@@ -141,3 +145,4 @@ pub enum CmakeCommands {
         version: Option<String>,
     },
 }
+
