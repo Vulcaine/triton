@@ -6,6 +6,8 @@ pub struct TritonRoot {
     pub app_name: String,
     pub generator: String,
     pub cxx_std: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub c_std: Option<String>,
 
     /// Top-level dependencies (vcpkg or git). Supports both simple and detailed forms.
     pub deps: Vec<DepSpec>,
@@ -106,14 +108,26 @@ fn default_cache_type() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TritonComponent {
     pub kind: String, // "exe" | "lib"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cxx_std: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub c_std: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link: Vec<LinkEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_libs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub defines: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exports: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_dirs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
     #[serde(default, skip_serializing_if = "LinkOptions::is_none")]
     pub link_options: LinkOptions,
     #[serde(default, skip_serializing_if = "VendorLibs::is_none")]
@@ -166,6 +180,8 @@ pub enum LinkEntry {
         package: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         targets: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        visibility: Option<String>,
     },
     Map(BTreeMap<String, LinkHint>),
 }
@@ -176,6 +192,8 @@ pub struct LinkHint {
     pub package: Option<String>,
     #[serde(default)]
     pub targets: Option<Vec<String>>,
+    #[serde(default)]
+    pub visibility: Option<String>,
 }
 
 impl LinkEntry {
@@ -206,5 +224,14 @@ impl LinkEntry {
             }
             LinkEntry::Name(_) => vec![],
         }
+    }
+
+    pub fn is_public(&self) -> bool {
+        let raw = match self {
+            LinkEntry::Name(_) => None,
+            LinkEntry::Named { visibility, .. } => visibility.as_deref(),
+            LinkEntry::Map(map) => map.iter().next().and_then(|(_k, v)| v.visibility.as_deref()),
+        };
+        !matches!(raw.map(|s| s.trim().to_ascii_lowercase()), Some(v) if v == "private")
     }
 }

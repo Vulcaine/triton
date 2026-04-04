@@ -461,6 +461,7 @@ fn build_link_entry(pkg: &str, detected: &Option<(String, Vec<String>)>) -> Link
                 name: pkg.to_string(),
                 package: Some(pkg_name.clone()),
                 targets: Some(targets.clone()),
+                visibility: None,
             };
         }
         if pkg_name != pkg {
@@ -468,6 +469,7 @@ fn build_link_entry(pkg: &str, detected: &Option<(String, Vec<String>)>) -> Link
                 name: pkg.to_string(),
                 package: Some(pkg_name.clone()),
                 targets: None,
+                visibility: None,
             };
         }
     }

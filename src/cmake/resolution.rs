@@ -66,7 +66,7 @@ pub(super) fn build_effective_git_specs(
         {
             continue;
         }
-        let public = comp.exports.contains(&name);
+        let public = ent.is_public() || comp.exports.contains(&name);
         if seen.insert(name.clone()) {
             out.push(GitSpec {
                 name: name.clone(),
@@ -120,7 +120,7 @@ pub(super) fn build_effective_vcpkg_specs(
         }) {
             continue;
         }
-        let public = comp.exports.contains(&name);
+        let public = ent.is_public() || comp.exports.contains(&name);
 
         // If your DepDetailed has an optional 'package' in your codebase, use it here.
         let pkg_override = root.deps.iter().find_map(|d| {

@@ -1,7 +1,8 @@
 ﻿use anyhow::{Context, Result};
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::env;
 use walkdir::WalkDir;
 
 use crate::models::{DepDetailed, DepSpec, TritonRoot};
@@ -77,6 +78,12 @@ pub fn handle_install(_root: &TritonRoot, project: &Path, _vcpkg_exe: &PathBuf, 
     #[cfg(not(windows))]
     let vcpkg_bin = project.join("vcpkg").join("vcpkg");
 
+    let install_stamp = project
+        .join("vcpkg_installed")
+        .join(triplet)
+        .join(".triton-manifest-installed.stamp");
+    let _ = fs::remove_file(&install_stamp);
+
     let mut install = Command::new(&vcpkg_bin);
     install
         .arg("install")
@@ -85,7 +92,7 @@ pub fn handle_install(_root: &TritonRoot, project: &Path, _vcpkg_exe: &PathBuf, 
     if let Some(path) = build_vcpkg_path(project) {
         install.env("PATH", path);
     }
-    install.env("VCPKG_FORCE_SYSTEM_BINARIES", "1");
+
     let status = install.status().context("failed to run vcpkg install")?;
 
     if !status.success() {
@@ -98,6 +105,11 @@ pub fn handle_install(_root: &TritonRoot, project: &Path, _vcpkg_exe: &PathBuf, 
     // Verify requested features actually installed
     let root: TritonRoot = read_json(project.join("triton.json"))?;
     verify_vcpkg_features(project, &root, &vcpkg_bin, &triplet)?;
+
+    if let Some(parent) = install_stamp.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&install_stamp, b"ok")?;
 
     Ok(())
 }
@@ -216,7 +228,7 @@ fn verify_vcpkg_features(project: &Path, root: &TritonRoot, vcpkg_bin: &Path, tr
     if let Some(path) = build_vcpkg_path(project) {
         list.env("PATH", path);
     }
-    list.env("VCPKG_FORCE_SYSTEM_BINARIES", "1");
+
     let output = list.output();
 
     let output = match output {
@@ -253,6 +265,11 @@ fn verify_vcpkg_features(project: &Path, root: &TritonRoot, vcpkg_bin: &Path, tr
 
     Ok(())
 }
+
+
+
+
+
 
 
 

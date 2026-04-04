@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+use super::languages::{detect_component_languages_in_dir, detect_graph_languages};
 use crate::models::{TritonComponent, TritonRoot};
 use crate::templates::cmake_root_helpers;
-use crate::util::{read_to_string_opt, write_text_if_changed};
+use crate::util::write_text_if_changed;
 
 use super::generators::*;
 
@@ -18,9 +19,11 @@ pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
         "cmake_minimum_required(VERSION {}.{}.{})\n",
         maj, min, pat
     ));
+    let graph_languages = detect_graph_languages(Path::new("."), root)?;
     body.push_str(&format!(
-        "project({} LANGUAGES CXX)\n\n",
-        root.app_name.replace('-', "_")
+        "project({} LANGUAGES {})\n\n",
+        root.app_name.replace('-', "_"),
+        graph_languages.cmake_languages_clause()
     ));
 
     // Helpers: strip any accidental prologue lines so we don't duplicate project()
@@ -74,6 +77,20 @@ pub fn regenerate_root_cmake(root: &TritonRoot) -> Result<()> {
     Ok(())
 }
 
+fn generate_component_language_block(comp_dir: &Path, root: &TritonRoot, comp: &TritonComponent) -> Result<String> {
+    let settings = detect_component_languages_in_dir(Path::new("."), comp_dir, root, comp)?;
+    let mut lines = Vec::new();
+
+    if let Some(c_std) = settings.c_std {
+        lines.push(format!("set_property(TARGET ${{_comp_name}} PROPERTY C_STANDARD {})", c_std));
+    }
+    if let Some(cxx_std) = settings.cxx_std {
+        lines.push(format!("set_property(TARGET ${{_comp_name}} PROPERTY CXX_STANDARD {})", cxx_std));
+    }
+
+    Ok(lines.join("\n"))
+}
+
 /// Ensure the first line is a `cmake_minimum_required(VERSION ...)` directive.
 fn ensure_cmake_version_header(base: &str, cmake_ver: (u32, u32, u32)) -> String {
     let (maj, min, pat) = cmake_ver;
@@ -90,38 +107,6 @@ fn ensure_cmake_version_header(base: &str, cmake_ver: (u32, u32, u32)) -> String
         lines.insert(1, String::new());
     }
     lines.join("\n")
-}
-
-/// Normalize include-directory blocks so both exe and lib targets work correctly.
-fn normalize_include_dirs(base: &str) -> String {
-    let canonical = r#"if(_is_exe)
-  target_include_directories(${_comp_name} PRIVATE "include")
-else()
-  target_include_directories(${_comp_name} PUBLIC "include")
-endif()"#;
-
-    let duplicated = r#"if(_is_exe)
-  if(_is_exe)
-  target_include_directories(${_comp_name} PRIVATE "include")
-else()
-  target_include_directories(${_comp_name} PUBLIC "include")
-endif()
-else()
-  target_include_directories(${_comp_name} PUBLIC "include")
-endif()"#;
-
-    if !base.contains("if(_is_exe)")
-        && base.contains(r#"target_include_directories(${_comp_name} PRIVATE "include")"#)
-    {
-        base.replace(
-            r#"target_include_directories(${_comp_name} PRIVATE "include")"#,
-            canonical,
-        )
-    } else if base.contains(duplicated) {
-        base.replace(duplicated, canonical)
-    } else {
-        base.to_string()
-    }
 }
 
 /// Replace the naive TARGET_RUNTIME_DLLS copy command with one that is a no-op
@@ -162,9 +147,20 @@ fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonCompon
         dep_lines.push("".into());
     }
 
-    dep_lines.extend(gen_git_dep_lines(root, name, comp));
-    if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
-        dep_lines.push("".into());
+    let include_lines = gen_component_include_dirs_lines(comp);
+    if !include_lines.is_empty() {
+        dep_lines.extend(include_lines);
+        if !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
+    }
+
+    let source_lines = gen_component_extra_sources_lines(comp);
+    if !source_lines.is_empty() {
+        dep_lines.extend(source_lines);
+        if !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
     }
 
     let vcpkg_lines = gen_vcpkg_dep_lines(root, comp, name);
@@ -175,7 +171,21 @@ fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonCompon
         }
     }
 
-    dep_lines.extend(gen_component_link_lines(root, comp));
+    let component_link_lines = gen_component_link_lines(root, comp);
+    if !component_link_lines.is_empty() {
+        dep_lines.extend(component_link_lines);
+        if !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
+    }
+
+    let git_lines = gen_git_dep_lines(root, name, comp);
+    if !git_lines.is_empty() {
+        dep_lines.extend(git_lines);
+        if !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
+    }
 
     let vl_lines = gen_component_vendor_libs_lines(comp);
     if !vl_lines.is_empty() {
@@ -183,6 +193,14 @@ fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonCompon
             dep_lines.push("".into());
         }
         dep_lines.extend(vl_lines);
+    }
+
+    let system_lib_lines = gen_component_system_libs_lines(comp);
+    if !system_lib_lines.is_empty() {
+        if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
+            dep_lines.push("".into());
+        }
+        dep_lines.extend(system_lib_lines);
     }
 
     let lo_lines = gen_component_link_options_lines(comp);
@@ -236,43 +254,27 @@ pub fn rewrite_component_cmake(
     let path = comp_dir.join("CMakeLists.txt");
     let path_str = path.to_string_lossy().to_string();
 
-    // Load file or create from template
-    let base = read_to_string_opt(&path_str).unwrap_or_else(|| {
-        crate::templates::component_cmakelists(name.eq_ignore_ascii_case("tests"))
-    });
-
+    // Always regenerate the full component CMakeLists from the Triton template.
+    // Component CMake files are Triton-owned output and should not preserve
+    // ad-hoc local edits outside the generated dependency block.
+    let base = crate::templates::component_cmakelists(name.eq_ignore_ascii_case("tests"));
     let base = ensure_cmake_version_header(&base, cmake_ver);
-    let base_fixed = fix_target_runtime_dlls(&normalize_include_dirs(&base));
+    let base_fixed = fix_target_runtime_dlls(&base);
+    let language_block = generate_component_language_block(&comp_dir, root, comp)?;
 
-    // --- Replace triton deps block ---
-    let begin = "# ## triton:deps begin";
-    let end = "# ## triton:deps end";
-
-    let (pre, post) = match (base_fixed.find(begin), base_fixed.find(end)) {
-        (Some(b), Some(e)) if e > b => {
-            (base_fixed[..b].to_string(), base_fixed[(e + end.len())..].to_string())
-        }
-        _ => (base_fixed, "\n".to_string()),
-    };
-
+    // Fill the generated placeholders in the freshly generated template.
+    let lang_placeholder = "@TRITON_LANG_SETTINGS@";
+    let deps_placeholder = "@TRITON_DEPS@";
     let dep_lines = generate_managed_dep_block(name, root, comp);
+    let dep_block = dep_lines.join("\n");
 
-    let mut new_body = String::new();
-    new_body.push_str(&pre);
-    if !pre.ends_with('\n') {
-        new_body.push('\n');
+    if !base_fixed.contains(lang_placeholder) || !base_fixed.contains(deps_placeholder) {
+        unreachable!("component CMake template is missing a Triton placeholder");
     }
-    new_body.push_str(begin);
-    new_body.push('\n');
-    for l in dep_lines {
-        new_body.push_str(&l);
-        new_body.push('\n');
-    }
-    new_body.push_str(end);
-    if !post.starts_with('\n') {
-        new_body.push('\n');
-    }
-    new_body.push_str(&post);
+
+    let new_body = base_fixed
+        .replace(lang_placeholder, &language_block)
+        .replace(deps_placeholder, &dep_block);
 
     write_text_if_changed(&path_str, &new_body)
         .with_context(|| format!("writing {}", path_str))?;

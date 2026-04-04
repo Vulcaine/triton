@@ -1,8 +1,10 @@
 # Collect all test sources
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cxx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.ixx"
 )
 
 # Create the test executable
@@ -15,8 +17,7 @@ target_link_libraries(tests PRIVATE
     GTest::gtest_main
 )
 
-# C++ standard
-set_property(TARGET tests PROPERTY CXX_STANDARD 20)
+@TRITON_LANG_SETTINGS@
 
 # Enable testing & discovery
 enable_testing()
@@ -55,3 +56,6 @@ endif()
 # Wrapper so tools expecting a single test still work
 add_test(NAME all_tests COMMAND tests)
 set_tests_properties(all_tests PROPERTIES LABELS ${_TRITON_TEST_LABEL})
+
+# Dependencies
+@TRITON_DEPS@

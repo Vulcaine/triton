@@ -5,6 +5,19 @@ use crate::util::{cmake_quote, infer_cmake_type, split_kv};
 
 use super::resolution::{build_effective_git_specs, build_effective_vcpkg_specs};
 
+fn normalize_staged_path(raw: &str) -> String {
+    raw.trim().replace('\\', "/")
+}
+
+fn staged_source_expr(raw: &str, current_source_var: &str) -> (String, String) {
+    let normalized = normalize_staged_path(raw);
+    if let Some(rest) = normalized.strip_prefix("@root/") {
+        (format!("${{CMAKE_SOURCE_DIR}}/../{}", rest), rest.to_string())
+    } else {
+        (format!("{}/{}", current_source_var, normalized), normalized)
+    }
+}
+
 /* ----------------------------- cmake cache overrides ----------------------------- */
 
 pub(super) fn push_git_cache_overrides(lines: &mut Vec<String>, g: &GitDep) {
@@ -40,11 +53,12 @@ pub(super) fn push_git_cache_overrides(lines: &mut Vec<String>, g: &GitDep) {
     lines.push(String::new());
 }
 
-pub(super) fn emit_git_dep(lines: &mut Vec<String>, g: &GitDep) {
+pub(super) fn emit_git_dep(lines: &mut Vec<String>, g: &GitDep, public: bool) {
     let prefer = g.name.as_str();
+    let vis = if public { "PUBLIC" } else { "PRIVATE" };
     lines.push(format!(
-        "triton_add_subdir_and_link_strict(${{_comp_name}} \"${{CMAKE_SOURCE_DIR}}/../third_party/{name}\" \"{hint}\")",
-        name = g.name, hint = prefer
+        "triton_add_subdir_and_link_strict(${{_comp_name}} \"${{CMAKE_SOURCE_DIR}}/../third_party/{name}\" \"{hint}\" {vis})",
+        name = g.name, hint = prefer, vis = vis
     ));
     lines.push(String::new());
 }
@@ -108,7 +122,7 @@ endif()",
             }
             out.push(String::new());
         } else {
-            emit_git_dep(&mut out, g);
+            emit_git_dep(&mut out, g, spec.public);
         }
     }
 
@@ -170,8 +184,9 @@ pub(super) fn gen_component_link_lines(root: &TritonRoot, comp: &TritonComponent
     for ent in &comp.link {
         let (name, _) = ent.normalize();
         if root.components.contains_key(&name) {
+            let vis = if ent.is_public() { "PUBLIC" } else { "PRIVATE" };
             lines.push(format!(
-                "target_link_libraries(${{_comp_name}} PRIVATE {name})"
+                "target_link_libraries(${{_comp_name}} {vis} {name})"
             ));
             // Existing: include/<...>
             lines.push(format!(
@@ -193,23 +208,73 @@ endif()",
 
 pub(super) fn gen_component_resources_lines(comp: &TritonComponent) -> Vec<String> {
     let mut lines = vec![];
-    for res in &comp.resources {
-        let res = res.trim();
-        if res.is_empty() { continue; }
-        let dest_name = Path::new(res)
+    for raw in &comp.resources {
+        let raw = raw.trim();
+        if raw.is_empty() { continue; }
+        let (source_expr, display_path) = staged_source_expr(raw, "${CMAKE_CURRENT_SOURCE_DIR}");
+        let dest_name = Path::new(&display_path)
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or(res);
+            .unwrap_or(&display_path);
         lines.push(format!(
 "add_custom_command(TARGET ${{_comp_name}} POST_BUILD
     COMMAND ${{CMAKE_COMMAND}} -E copy_directory
-        \"${{CMAKE_CURRENT_SOURCE_DIR}}/{res}\"
+        \"{source_expr}\"
         \"$<TARGET_FILE_DIR:${{_comp_name}}>/{dest_name}\"
-    COMMENT \"Copying '{res}' next to executable\"
+    COMMENT \"Copying '{display_path}' next to executable\"
 )",
-            res = res, dest_name = dest_name
+            source_expr = source_expr, dest_name = dest_name, display_path = display_path
         ));
         lines.push(String::new());
+    }
+    lines
+}
+
+pub(super) fn gen_component_include_dirs_lines(comp: &TritonComponent) -> Vec<String> {
+    if comp.include_dirs.is_empty() {
+        return vec![];
+    }
+
+    let vis = if comp.kind == "exe" { "PRIVATE" } else { "PUBLIC" };
+    let mut lines = vec!["set_property(TARGET ${_comp_name} PROPERTY TRITON_MANUAL_INCLUDE_DIRS TRUE)".into()];
+    for raw in &comp.include_dirs {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let (source_expr, _) = staged_source_expr(raw, "${CMAKE_CURRENT_SOURCE_DIR}");
+        lines.push(format!(
+            "target_include_directories(${{_comp_name}} {vis} \"{source_expr}\")",
+            vis = vis,
+            source_expr = source_expr,
+        ));
+    }
+    lines
+}
+
+pub(super) fn gen_component_extra_sources_lines(comp: &TritonComponent) -> Vec<String> {
+    if comp.sources.is_empty() {
+        return vec![];
+    }
+
+    let mut lines = vec!["set_property(TARGET ${_comp_name} PROPERTY TRITON_MANUAL_SOURCES TRUE)".into()];
+    for raw in &comp.sources {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let (source_expr, display_path) = staged_source_expr(raw, "${CMAKE_CURRENT_SOURCE_DIR}");
+        lines.push(format!("if(EXISTS \"{source_expr}\")", source_expr = source_expr));
+        lines.push(format!(
+            "  target_sources(${{_comp_name}} PRIVATE \"{source_expr}\")",
+            source_expr = source_expr,
+        ));
+        lines.push("else()".into());
+        lines.push(format!(
+            "  message(WARNING \"triton: source path not found for '${{_comp_name}}': {display_path}\")",
+            display_path = display_path,
+        ));
+        lines.push("endif()".into());
     }
     lines
 }
@@ -293,6 +358,28 @@ pub(super) fn gen_component_link_options_lines(comp: &TritonComponent) -> Vec<St
     }
 }
 
+pub(super) fn gen_component_system_libs_lines(comp: &TritonComponent) -> Vec<String> {
+    if comp.system_libs.is_empty() {
+        return vec![];
+    }
+
+    let libs = comp
+        .system_libs
+        .iter()
+        .filter(|lib| !lib.trim().is_empty())
+        .map(|lib| format!("    {}", cmake_quote(lib)))
+        .collect::<Vec<_>>();
+
+    if libs.is_empty() {
+        return vec![];
+    }
+
+    let mut lines = vec!["target_link_libraries(${_comp_name} PRIVATE".into()];
+    lines.extend(libs);
+    lines.push(")".into());
+    lines
+}
+
 pub(super) fn gen_component_defines_lines(comp: &TritonComponent) -> Vec<String> {
     if comp.defines.is_empty() {
         return vec![];
@@ -339,7 +426,8 @@ pub(super) fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> 
         if a.is_empty() {
             continue;
         }
-        let id = make_id(a);
+        let (source_expr, display_path) = staged_source_expr(a, "${CMAKE_CURRENT_SOURCE_DIR}");
+        let id = make_id(&display_path);
 
         // Variables unique per asset
         //   _triton_asset_src_<id>
@@ -347,7 +435,7 @@ pub(super) fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> 
         //   _triton_asset_name_<id>
         //   _triton_asset_files_<id>
         //   _triton_asset_stamp_<id>
-        lines.push(format!("set(_triton_asset_src_{id} \"${{CMAKE_CURRENT_SOURCE_DIR}}/{a}\")"));
+        lines.push(format!("set(_triton_asset_src_{id} \"{source_expr}\")"));
         lines.push(format!("if(EXISTS \"${{_triton_asset_src_{id}}}\")"));
         lines.push(format!("  if(IS_DIRECTORY \"${{_triton_asset_src_{id}}}\")"));
         lines.push(format!("    get_filename_component(_triton_asset_name_{id} \"${{_triton_asset_src_{id}}}\" NAME)"));
@@ -381,7 +469,7 @@ pub(super) fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> 
         lines.push(format!("    list(APPEND _triton_asset_stamps \"${{_triton_asset_stamp_{id}}}\")"));
         lines.push("  endif()".into());
         lines.push("else()".into());
-        lines.push(format!("  message(WARNING \"triton: asset path not found for '${{_comp_name}}': ${{_triton_asset_src_{id}}}\")"));
+        lines.push(format!("  message(WARNING \"triton: asset path not found for '${{_comp_name}}': {display_path}\")"));
         lines.push("endif()".into());
     }
 

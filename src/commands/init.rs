@@ -195,8 +195,21 @@ fn discover_existing_components(project_dir: &Path, root: &mut TritonRoot) {
                 if name == "tests" { continue; }
                 // Only register if it has a CMakeLists.txt
                 if !path.join("CMakeLists.txt").exists() { continue; }
-                // Detect kind: exe if main.cpp exists, else lib
-                let kind = if path.join("src/main.cpp").exists() { "exe" } else { "lib" };
+                // Detect kind: exe if a recognized main.* entrypoint exists, else lib
+                let kind = if [
+                    "src/main.c",
+                    "src/main.cc",
+                    "src/main.cpp",
+                    "src/main.cxx",
+                    "src/main.ixx",
+                ]
+                .iter()
+                .any(|entry| path.join(entry).exists())
+                {
+                    "exe"
+                } else {
+                    "lib"
+                };
                 root.components
                     .entry(name)
                     .or_insert_with(|| TritonComponent {

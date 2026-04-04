@@ -51,7 +51,7 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
             "No usable build with tests for config '{}', running `triton build` firstâ€¦",
             cfg
         );
-        handle_build(path, None, cfg, false, false)?;
+        handle_build(path, None, cfg, None, false, false)?;
     }
 
     // --- Test selection knobs ------------------------------------------------
@@ -103,4 +103,5 @@ pub fn handle_test(path: &str, config: &str) -> Result<()> {
 
     Ok(())
 }
+
 

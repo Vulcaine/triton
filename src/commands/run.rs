@@ -1,10 +1,13 @@
-﻿use anyhow::{Context, Result};
+use anyhow::{Context, Result};
+use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
+use crate::cmake::detect_vcpkg_triplet_for_arch;
 use crate::models::TritonRoot;
 use crate::util::read_json;
 
@@ -21,12 +24,50 @@ fn exe_name_for(component: &str) -> String {
     if cfg!(windows) { format!("{component}.exe") } else { component.to_string() }
 }
 
-fn build_dir_for(project: &Path, cfg: &str) -> PathBuf {
-    project.join(format!("build/{}", cfg))
+fn component_triplet(project: &Path, component: Option<&str>) -> Result<String> {
+    let root: TritonRoot = read_json(project.join("triton.json"))?;
+    let arch = if let Some(name) = component {
+        root.components
+            .get(name)
+            .and_then(|c| c.arch.as_deref())
+            .map(|a| crate::cmake::normalize_target_arch(Some(a)))
+            .transpose()?
+            .unwrap_or(crate::cmake::host_default_arch())
+    } else {
+        crate::cmake::host_default_arch()
+    };
+    detect_vcpkg_triplet_for_arch(arch)
 }
 
-fn cmake_cache_exists(project: &Path, cfg: &str) -> bool {
-    build_dir_for(project, cfg).join("CMakeCache.txt").exists()
+fn build_dir_for(project: &Path, cfg: &str, component: Option<&str>) -> Result<PathBuf> {
+    let triplet = component_triplet(project, component)?;
+    Ok(super::build::build_dir_for_triplet(project, cfg, &triplet))
+}
+
+fn runtime_search_dirs(project: &Path, cfg: &str, exe_dir: &Path, component: Option<&str>) -> Result<Vec<PathBuf>> {
+    let triplet = component_triplet(project, component)?;
+    let build_dir = build_dir_for(project, cfg, component)?;
+    let mut dirs = vec![exe_dir.to_path_buf()];
+    if cfg.eq_ignore_ascii_case("debug") {
+        dirs.push(build_dir.join("vcpkg_installed").join(&triplet).join("debug").join("bin"));
+    }
+    dirs.push(build_dir.join("vcpkg_installed").join(&triplet).join("bin"));
+    Ok(dirs)
+}
+
+fn prepend_existing_path_dirs(dirs: &[PathBuf]) -> Result<OsString> {
+    let existing = env::var_os("PATH").unwrap_or_default();
+    let mut parts = env::split_paths(&existing).collect::<Vec<_>>();
+    for dir in dirs.iter().rev() {
+        if dir.is_dir() && !parts.iter().any(|p| p == dir) {
+            parts.insert(0, dir.clone());
+        }
+    }
+    env::join_paths(parts).context("failed to compose PATH for triton run")
+}
+
+fn cmake_cache_exists(project: &Path, cfg: &str, component: Option<&str>) -> bool {
+    build_dir_for(project, cfg, component).map(|d| d.join("CMakeCache.txt").exists()).unwrap_or(false)
 }
 
 fn newest_mtime_in_dirs(dirs: &[&Path], exts: &[&str]) -> SystemTime {
@@ -84,7 +125,7 @@ fn newest_project_input_mtime(project: &Path) -> SystemTime {
 }
 
 fn find_executable(project: &Path, cfg: &str, component: Option<&str>) -> Result<PathBuf> {
-    let build_dir = build_dir_for(project, cfg);
+    let build_dir = build_dir_for(project, cfg, component)?;
     let want = if let Some(c) = component {
         exe_name_for(c)
     } else {
@@ -126,7 +167,7 @@ pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[Str
 
     // Fast path: if exe exists and is newer than inputs, and cache exists -> skip build
     let need_build = {
-        let cache_ok = cmake_cache_exists(&project, cfg);
+        let cache_ok = cmake_cache_exists(&project, cfg, component);
         let exe_path_guess = find_executable(&project, cfg, component).ok();
         match (cache_ok, exe_path_guess) {
             (true, Some(exe)) => {
@@ -139,15 +180,18 @@ pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[Str
     };
 
     if need_build {
-        handle_build(&project.display().to_string(), component, cfg, false, false)?;
+        handle_build(&project.display().to_string(), component, cfg, None, false, false)?;
     }
 
     // Run (re-find exe in case we just built it)
     let exe_path = find_executable(&project, cfg, component)?;
     eprintln!("Running {} â€¦", exe_path.display());
+    let exe_dir = exe_path.parent().unwrap_or(&project);
+    let run_path = prepend_existing_path_dirs(&runtime_search_dirs(&project, cfg, exe_dir, component)?)?;
     let status = Command::new(&exe_path)
         .args(args)
-        .current_dir(exe_path.parent().unwrap_or(&project))
+        .current_dir(exe_dir)
+        .env("PATH", run_path)
         .status()
         .with_context(|| format!("failed to launch {}", exe_path.display()))?;
     if !status.success() {
@@ -155,4 +199,7 @@ pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[Str
     }
     Ok(())
 }
+
+
+
 

@@ -5,8 +5,14 @@ get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
 file(GLOB_RECURSE COMP_SOURCES CONFIGURE_DEPENDS
     "src/*.c" "src/*.cc" "src/*.cxx" "src/*.cpp" "src/*.ixx")
 
-# Rule: a component is an executable ONLY if it has src/main.cpp.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
+# Rule: a component is an executable only if it has a recognized src/main.* entrypoint.
+if(
+  EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.c" OR
+  EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc" OR
+  EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp" OR
+  EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cxx" OR
+  EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.ixx"
+)
   add_executable(${_comp_name})
   set(_is_exe ON)
 else()
@@ -25,7 +31,7 @@ else()
   target_include_directories(${_comp_name} PUBLIC "include")
 endif()
 
-set_property(TARGET ${_comp_name} PROPERTY CXX_STANDARD 20)
+@TRITON_LANG_SETTINGS@
 
 # On Windows, copy runtime DLLs beside the executable after build (MSVC, vcpkg, etc.)
 if(WIN32 AND _is_exe)
@@ -40,17 +46,14 @@ if(WIN32 AND _is_exe)
   # Ensure VS debugger / cmake launchers run inside exe folder
   set_property(TARGET ${_comp_name} PROPERTY
     VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:${_comp_name}>")
-  set_property(TARGET ${_comp_name} PROPERTY
-    VS_DEBUGGER_ENVIRONMENT "PATH=$<TARGET_FILE_DIR:${_comp_name}>;%PATH%")
+  if(DEFINED VCPKG_TARGET_TRIPLET)
+    set_property(TARGET ${_comp_name} PROPERTY
+      VS_DEBUGGER_ENVIRONMENT "PATH=$<TARGET_FILE_DIR:${_comp_name}>;${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/bin;${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin;%PATH%")
+  else()
+    set_property(TARGET ${_comp_name} PROPERTY
+      VS_DEBUGGER_ENVIRONMENT "PATH=$<TARGET_FILE_DIR:${_comp_name}>;%PATH%")
+  endif()
 endif()
 
-# Dependencies (managed by triton)
-# ## triton:deps begin
-# --- triton: resolve local target name ---
-if(NOT DEFINED _comp_name)
-  get_filename_component(_comp_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
-endif()
-
-# (triton will inject find_package/add_subdirectory/target_link_libraries here)
-
-# ## triton:deps end
+# Dependencies
+@TRITON_DEPS@

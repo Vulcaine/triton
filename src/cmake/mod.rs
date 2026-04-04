@@ -1,7 +1,9 @@
 mod generators;
+mod languages;
 mod resolution;
 mod rewrite;
 
+pub use languages::detect_graph_languages;
 pub use rewrite::{regenerate_root_cmake, rewrite_component_cmake};
 
 use anyhow::Result;

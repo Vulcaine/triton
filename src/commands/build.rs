@@ -1,6 +1,6 @@
 ﻿use anyhow::{Context, Result};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -10,9 +10,9 @@ use std::process::{Command, ExitStatus};
 use walkdir::WalkDir;
 
 use crate::cmake::{
-    arch_label_for_triplet, detect_vcpkg_triplet, detect_vcpkg_triplet_for_arch,
-    effective_cmake_version, regenerate_root_cmake,
-    rewrite_component_cmake,
+    arch_label_for_triplet, detect_graph_languages, detect_vcpkg_triplet,
+    detect_vcpkg_triplet_for_arch, effective_cmake_version, host_default_arch,
+    normalize_target_arch, regenerate_root_cmake, rewrite_component_cmake,
 };
 use crate::models::TritonRoot;
 use crate::templates::cmake_presets;
@@ -248,7 +248,7 @@ fn write_batch_and_run(
     }
     // Avoid inheriting random compilers
     bat.push_str("set CC=\r\nset CXX=\r\n");
-    bat.push_str("set VCPKG_FORCE_SYSTEM_BINARIES=1\r\n");
+
 
     for c in commands {
         bat.push_str(c);
@@ -302,6 +302,273 @@ fn handle_clean(build_root: &Path, clean: bool, cleanf: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn component_declared_arch(comp: &crate::models::TritonComponent) -> Result<Option<&'static str>> {
+    match comp.arch.as_deref() {
+        Some(a) if !a.trim().is_empty() => Ok(Some(normalize_target_arch(Some(a))?)),
+        _ => Ok(None),
+    }
+}
+
+fn resolve_build_arch(root: &TritonRoot, component: Option<&str>, cli_arch: Option<&str>) -> Result<&'static str> {
+    let cli = match cli_arch {
+        Some(a) => Some(normalize_target_arch(Some(a))?),
+        None => None,
+    };
+
+    if let Some(name) = component {
+        let comp = root
+            .components
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("component '{}' was not found in triton.json/components", name))?;
+        let declared = component_declared_arch(comp)?;
+        if let (Some(c), Some(d)) = (cli, declared) {
+            if c != d {
+                anyhow::bail!(
+                    "component '{}' targets {} but the requested build architecture is {}. Triton cannot mix x86/x64/arm64 in one component build.",
+                    name,
+                    d,
+                    c
+                );
+            }
+        }
+        return Ok(cli.or(declared).unwrap_or(host_default_arch()));
+    }
+
+    Ok(cli.unwrap_or(host_default_arch()))
+}
+
+fn validate_component_arch_graph(root: &TritonRoot, root_component: &str, effective_arch: &str) -> Result<()> {
+    use std::collections::HashSet;
+
+    fn visit(
+        root: &TritonRoot,
+        current: &str,
+        expected_arch: &str,
+        seen: &mut HashSet<String>,
+        stack: &mut Vec<String>,
+    ) -> Result<()> {
+        if !seen.insert(current.to_string()) {
+            return Ok(());
+        }
+        let comp = root
+            .components
+            .get(current)
+            .ok_or_else(|| anyhow::anyhow!("component '{}' was not found in triton.json/components", current))?;
+        if let Some(declared) = component_declared_arch(comp)? {
+            if declared != expected_arch {
+                let chain = if stack.is_empty() { current.to_string() } else { format!("{} -> {}", stack.join(" -> "), current) };
+                anyhow::bail!(
+                    "component architecture conflict: '{}' requires {} but dependency chain '{}' resolves inside a {} build. Triton cannot link x86 to x64 or x64 to x86.",
+                    current,
+                    declared,
+                    chain,
+                    expected_arch
+                );
+            }
+        }
+        stack.push(current.to_string());
+        for ent in &comp.link {
+            let (name, _) = ent.normalize();
+            if root.components.contains_key(&name) {
+                visit(root, &name, expected_arch, seen, stack)?;
+            }
+        }
+        stack.pop();
+        Ok(())
+    }
+
+    let mut seen = HashSet::new();
+    let mut stack = Vec::new();
+    visit(root, root_component, effective_arch, &mut seen, &mut stack)
+}
+
+fn effective_component_arch(comp: &crate::models::TritonComponent) -> Result<&'static str> {
+    Ok(component_declared_arch(comp)?.unwrap_or(host_default_arch()))
+}
+
+fn component_names_for_arch(root: &TritonRoot, arch: &str) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for (name, comp) in &root.components {
+        if effective_component_arch(comp)? == arch {
+            names.push(name.clone());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn filtered_root_for_arch(root: &TritonRoot, arch: &str) -> Result<TritonRoot> {
+    let mut filtered = root.clone();
+    filtered.components.retain(|_, comp| {
+        effective_component_arch(comp)
+            .map(|value| value == arch)
+            .unwrap_or(false)
+    });
+    Ok(filtered)
+}
+
+fn filtered_root_for_component(root: &TritonRoot, root_component: &str) -> Result<TritonRoot> {
+    use std::collections::HashSet;
+
+    fn visit(root: &TritonRoot, current: &str, keep: &mut HashSet<String>) -> Result<()> {
+        if !keep.insert(current.to_string()) {
+            return Ok(());
+        }
+        let comp = root
+            .components
+            .get(current)
+            .ok_or_else(|| anyhow::anyhow!("component '{}' was not found in triton.json/components", current))?;
+        for ent in &comp.link {
+            let (name, _) = ent.normalize();
+            if root.components.contains_key(&name) {
+                visit(root, &name, keep)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut keep = HashSet::new();
+    visit(root, root_component, &mut keep)?;
+
+    let mut filtered = root.clone();
+    filtered.components.retain(|name, _| keep.contains(name));
+    Ok(filtered)
+}
+
+fn validate_all_component_arch_graphs(root: &TritonRoot, arch_filter: Option<&str>) -> Result<()> {
+    for (name, comp) in &root.components {
+        let effective_arch = effective_component_arch(comp)?;
+        if arch_filter.is_some_and(|wanted| wanted != effective_arch) {
+            continue;
+        }
+        validate_component_arch_graph(root, name, effective_arch)?;
+    }
+    Ok(())
+}
+
+fn collect_build_arches(root: &TritonRoot, requested_arch: Option<&str>) -> Result<Vec<&'static str>> {
+    if let Some(arch) = requested_arch {
+        return Ok(vec![normalize_target_arch(Some(arch))?]);
+    }
+
+    let mut arches = BTreeSet::new();
+    for comp in root.components.values() {
+        arches.insert(effective_component_arch(comp)?);
+    }
+    if arches.is_empty() {
+        arches.insert(host_default_arch());
+    }
+    Ok(arches.into_iter().collect())
+}
+
+struct BuildBatch<'a> {
+    root: &'a TritonRoot,
+    project: &'a Path,
+    components_dir: &'a Path,
+    cmake_exe: &'a Path,
+    vcpkg_toolchain: &'a str,
+    vcpkg_exe: &'a PathBuf,
+    cfg: &'a str,
+    preset: &'a str,
+    ninja_abs_dir: Option<&'a Path>,
+    using_ninja_on_windows: bool,
+}
+
+impl<'a> BuildBatch<'a> {
+    fn run(&self, batch_root: &TritonRoot, component: Option<&str>, resolved_arch: &'static str) -> Result<PathBuf> {
+        let triplet = detect_vcpkg_triplet_for_arch(resolved_arch)?;
+        let target_arch = arch_label_for_triplet(&triplet);
+        let build_dir = build_dir_for_triplet(self.project, self.cfg, &triplet);
+        let graph_languages = detect_graph_languages(self.project, batch_root)?;
+
+        if let Some(component_name) = component {
+            let component_exists = batch_root.components.contains_key(component_name)
+                && self.components_dir.join(component_name).is_dir();
+            if !component_exists {
+                anyhow::bail!("component '{}' was not found in triton.json/components", component_name);
+            }
+        }
+
+        let should_install = component.is_none() || !has_installed_vcpkg_state(self.project, &triplet);
+        let reuse_installed_vcpkg = !should_install;
+        if should_install {
+            handle_install(self.root, self.project, self.vcpkg_exe, &triplet)?;
+        } else if let Some(name) = component {
+            eprintln!("Using existing vcpkg install for component build '{}'.", name);
+        } else {
+            eprintln!("Using existing vcpkg install for {} batch.", resolved_arch);
+        }
+
+        let cmake_ver = effective_cmake_version();
+        let existing: Vec<String> = batch_root
+            .components
+            .keys()
+            .filter(|name| self.components_dir.join(*name).is_dir())
+            .cloned()
+            .collect();
+
+        let mut root_filtered = batch_root.clone();
+        root_filtered
+            .components
+            .retain(|name, _| existing.iter().any(|n| n == name));
+
+        regenerate_root_cmake(&root_filtered)?;
+        for name in existing {
+            if let Some(comp) = batch_root.components.get(&name) {
+                rewrite_component_cmake(&name, batch_root, comp, cmake_ver)?;
+            }
+        }
+
+        let presets_path = self.components_dir.join("CMakePresets.json");
+        let text = cmake_presets(&self.root.app_name, &self.root.generator, &triplet, cmake_ver);
+        fs::write(&presets_path, text)?;
+
+        let (_v, map) = load_presets(self.components_dir)?;
+        let mut guard = Vec::new();
+        let effective_gen = resolve_generator_for_preset(&map, self.preset, &mut guard)
+            .or_else(|| resolve_generator_for_preset(&map, "default", &mut guard))
+            .unwrap_or_else(|| "Ninja".to_string());
+
+        let malformed_cache = build_dir.join("CMakeCache.txt").exists() && !build_tree_has_valid_compiler_id(&build_dir);
+        let configure_needed = !is_configured_for_generator(&build_dir, &effective_gen)
+            || component.is_some_and(|target| !build_tree_has_target(&build_dir, target))
+            || malformed_cache;
+        if configure_needed {
+            if malformed_cache {
+                eprintln!("Detected incomplete CMake cache in {}. Reconfiguring from a clean cache.", build_dir.display());
+                clear_configure_state(&build_dir)?;
+            }
+            fs::create_dir_all(&build_dir)?;
+            run_cmake_configure(
+                self.cmake_exe,
+                self.project,
+                self.components_dir,
+                self.preset,
+                Path::new(self.vcpkg_toolchain),
+                self.ninja_abs_dir,
+                self.using_ninja_on_windows,
+                reuse_installed_vcpkg,
+                target_arch,
+                graph_languages.uses_c,
+                graph_languages.uses_cxx,
+            )?;
+        }
+
+        run_cmake_build(
+            self.cmake_exe,
+            self.project,
+            self.components_dir,
+            self.preset,
+            component,
+            self.ninja_abs_dir,
+            self.using_ninja_on_windows,
+            target_arch,
+        )?;
+
+        Ok(build_dir)
+    }
 }
 
 fn find_cmake_in_vcpkg(project: &Path) -> Option<PathBuf> {
@@ -387,6 +654,8 @@ fn run_cmake_configure(
     using_ninja_on_windows: bool,
     skip_manifest_install: bool,
     target_arch: &str,
+    needs_c: bool,
+    needs_cxx: bool,
 ) -> Result<()> {
     let toolchain_arg = format!(
         "-DCMAKE_TOOLCHAIN_FILE=\"{}\"",
@@ -419,7 +688,12 @@ fn run_cmake_configure(
                 )
             })?;
             let cl = msvc_cl_path(&vs, target_arch).ok_or_else(|| anyhow::anyhow!("could not locate VS 2022 cl.exe"))?;
-            configure_line.push_str(&format!(" -DCMAKE_C_COMPILER=\"{}\" -DCMAKE_CXX_COMPILER=\"{}\"", win_norm(&cl), win_norm(&cl)));
+            if needs_c {
+                configure_line.push_str(&format!(" -DCMAKE_C_COMPILER=\"{}\"", win_norm(&cl)));
+            }
+            if needs_cxx {
+                configure_line.push_str(&format!(" -DCMAKE_CXX_COMPILER=\"{}\"", win_norm(&cl)));
+            }
             let status = write_batch_and_run(
                 components_dir,
                 &vs,
@@ -453,7 +727,7 @@ fn run_cmake_configure(
         // avoid leaking CC/CXX from environment
         cmd.env_remove("CC");
         cmd.env_remove("CXX");
-        cmd.env("VCPKG_FORCE_SYSTEM_BINARIES", "1");
+
 
         let status = cmd.status().context("cmake configure failed")?;
         if !status.success() {
@@ -511,7 +785,7 @@ fn run_cmake_build(
         if let Some(path) = build_process_path(project, ninja_abs_dir) {
             b.env("PATH", path);
         }
-        b.env("VCPKG_FORCE_SYSTEM_BINARIES", "1");
+
         let status = b.status().context("cmake build failed")?;
         if !status.success() {
             anyhow::bail!("build failed for preset {}", preset);
@@ -521,11 +795,30 @@ fn run_cmake_build(
 }
 
 fn has_installed_vcpkg_state(project: &Path, triplet: &str) -> bool {
-    project
+    let stamp = project
         .join("vcpkg_installed")
         .join(triplet)
-        .join("share")
-        .is_dir()
+        .join(".triton-manifest-installed.stamp");
+    if !stamp.is_file() {
+        return false;
+    }
+
+    let stamp_time = match fs::metadata(&stamp).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    for input in [project.join("vcpkg.json"), project.join("triton.json")] {
+        if let Ok(meta) = fs::metadata(input) {
+            if let Ok(modified) = meta.modified() {
+                if modified > stamp_time {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
 }
 
 fn build_tree_has_target(build_dir: &Path, target: &str) -> bool {
@@ -553,8 +846,8 @@ fn run_pre_build_scripts(root: &TritonRoot, project: &Path) -> Result<()> {
 }
 
 // === Main build entrypoint ===
-pub fn handle_build(path: &str, component: Option<&str>, config: &str, clean: bool, cleanf: bool) -> Result<()> {
-    handle_build_with_arch(path, component, None, config, clean, cleanf)
+pub fn handle_build(path: &str, component: Option<&str>, config: &str, arch: Option<&str>, clean: bool, cleanf: bool) -> Result<()> {
+    handle_build_with_arch(path, component, arch, config, clean, cleanf)
 }
 
 pub fn handle_build_with_arch(path: &str, component: Option<&str>, arch: Option<&str>, config: &str, clean: bool, cleanf: bool) -> Result<()> {
@@ -563,16 +856,8 @@ pub fn handle_build_with_arch(path: &str, component: Option<&str>, arch: Option<
         .unwrap_or_else(|_| PathBuf::from(path));
     let components_dir = project.join("components");
 
-    // Resolve triplet once from arch (or use host default)
-    let triplet = match arch {
-        Some(a) => detect_vcpkg_triplet_for_arch(a)?,
-        None => detect_vcpkg_triplet(),
-    };
-    let target_arch = arch_label_for_triplet(&triplet);
-
     let cfg = normalize_config(config);
     let preset = preset_for(cfg);
-    let build_dir = build_dir_for_triplet(&project, cfg, &triplet);
     let build_root = project.join("build");
     let cmake_exe = resolve_cmake_executable(&project);
 
@@ -580,105 +865,102 @@ pub fn handle_build_with_arch(path: &str, component: Option<&str>, arch: Option<
 
     let (vcpkg_toolchain, vcpkg_exe) = ensure_vcpkg(&project)?;
     let root: TritonRoot = read_json(project.join("triton.json"))?;
-    let should_install = component.is_none() || !has_installed_vcpkg_state(&project, &triplet);
-    let reuse_installed_vcpkg = !should_install;
-    if should_install {
-        handle_install(&root, &project, &vcpkg_exe, &triplet)?;
-    } else {
-        eprintln!("Using existing vcpkg install for component build '{}'.", component.unwrap());
-    }
-
     if let Some(component_name) = component {
-        let component_exists = root.components.contains_key(component_name)
-            && components_dir.join(component_name).is_dir();
-        if !component_exists {
-            anyhow::bail!("component '{}' was not found in triton.json/components", component_name);
-        }
-    }
+        let resolved_arch = resolve_build_arch(&root, component, arch)?;
+        validate_component_arch_graph(&root, component_name, resolved_arch)?;
+        let component_root = filtered_root_for_component(&root, component_name)?;
 
-    let cmake_ver = effective_cmake_version();
-    let existing: Vec<String> = root
-        .components
-        .keys()
-        .filter(|name| components_dir.join(*name).is_dir())
-        .cloned()
-        .collect();
-
-    let mut root_filtered = root.clone();
-    root_filtered
-        .components
-        .retain(|name, _| existing.iter().any(|n| n == name));
-
-    regenerate_root_cmake(&root_filtered)?;
-    for name in existing {
-        if let Some(comp) = root.components.get(&name) {
-            rewrite_component_cmake(&name, &root, comp, cmake_ver)?;
-        }
-    }
-
-    let presets_path = components_dir.join("CMakePresets.json");
-    if !presets_path.exists() {
-        let text = cmake_presets(&root.app_name, &root.generator, &triplet, cmake_ver);
+        let mut ninja_abs_dir: Option<PathBuf> = None;
+        let presets_path = components_dir.join("CMakePresets.json");
+        let text = cmake_presets(
+            &root.app_name,
+            &root.generator,
+            &detect_vcpkg_triplet_for_arch(resolved_arch)?,
+            effective_cmake_version(),
+        );
         fs::write(&presets_path, text)?;
+        let (_v, map) = load_presets(&components_dir)?;
+        let mut guard = Vec::new();
+        let effective_gen = resolve_generator_for_preset(&map, preset, &mut guard)
+            .or_else(|| resolve_generator_for_preset(&map, "default", &mut guard))
+            .unwrap_or_else(|| "Ninja".to_string());
+        if effective_gen.eq_ignore_ascii_case("ninja") {
+            ninja_abs_dir = Some(ensure_ninja_dir(&components_dir)?);
+        }
+
+        #[cfg(windows)]
+        let using_ninja_on_windows = effective_gen.eq_ignore_ascii_case("ninja");
+        #[cfg(not(windows))]
+        let using_ninja_on_windows = false;
+
+        let batch = BuildBatch {
+            root: &root,
+            project: &project,
+            components_dir: &components_dir,
+            cmake_exe: &cmake_exe,
+            vcpkg_toolchain: &vcpkg_toolchain,
+            vcpkg_exe: &vcpkg_exe,
+            cfg,
+            preset,
+            ninja_abs_dir: ninja_abs_dir.as_deref(),
+            using_ninja_on_windows,
+        };
+        let build_dir = batch.run(&component_root, component, resolved_arch)?;
+        eprintln!("Built at {}", build_dir.display());
+        return Ok(());
     }
 
-    let (_v, map) = load_presets(&components_dir)?;
-    let mut guard = Vec::new();
-    let effective_gen = resolve_generator_for_preset(&map, preset, &mut guard)
-        .or_else(|| resolve_generator_for_preset(&map, "default", &mut guard))
-        .unwrap_or_else(|| "Ninja".to_string());
+    let requested_arch = arch.map(|value| normalize_target_arch(Some(value))).transpose()?;
+    validate_all_component_arch_graphs(&root, requested_arch)?;
 
     let mut ninja_abs_dir: Option<PathBuf> = None;
-    if effective_gen.eq_ignore_ascii_case("ninja") {
+    if "Ninja".eq_ignore_ascii_case(&root.generator) {
         ninja_abs_dir = Some(ensure_ninja_dir(&components_dir)?);
     }
 
     #[cfg(windows)]
-    let using_ninja_on_windows = effective_gen.eq_ignore_ascii_case("ninja");
+    let using_ninja_on_windows = root.generator.eq_ignore_ascii_case("ninja");
     #[cfg(not(windows))]
     let using_ninja_on_windows = false;
-
-    let malformed_cache = build_dir.join("CMakeCache.txt").exists() && !build_tree_has_valid_compiler_id(&build_dir);
-    let configure_needed = !is_configured_for_generator(&build_dir, &effective_gen)
-        || component.is_some_and(|target| !build_tree_has_target(&build_dir, target))
-        || malformed_cache;
-    if configure_needed {
-        if malformed_cache {
-            eprintln!("Detected incomplete CMake cache in {}. Reconfiguring from a clean cache.", build_dir.display());
-            clear_configure_state(&build_dir)?;
-        }
-        fs::create_dir_all(&build_dir)?;
-        run_cmake_configure(
-            &cmake_exe,
-            &project,
-            &components_dir,
-            preset,
-            Path::new(&vcpkg_toolchain),
-            ninja_abs_dir.as_deref(),
-            using_ninja_on_windows,
-            reuse_installed_vcpkg,
-            target_arch,
-        )?;
-    }
 
     if component.is_none() {
         run_pre_build_scripts(&root, &project)?;
     }
 
-    run_cmake_build(
-        &cmake_exe,
-        &project,
-        &components_dir,
+    let batch = BuildBatch {
+        root: &root,
+        project: &project,
+        components_dir: &components_dir,
+        cmake_exe: &cmake_exe,
+        vcpkg_toolchain: &vcpkg_toolchain,
+        vcpkg_exe: &vcpkg_exe,
+        cfg,
         preset,
-        component,
-        ninja_abs_dir.as_deref(),
+        ninja_abs_dir: ninja_abs_dir.as_deref(),
         using_ninja_on_windows,
-        target_arch,
-    )?;
+    };
 
-    eprintln!("Built at {}", build_dir.display());
+    let arches = collect_build_arches(&root, requested_arch)?;
+    for current_arch in arches {
+        let batch_root = filtered_root_for_arch(&root, current_arch)?;
+        if batch_root.components.is_empty() {
+            continue;
+        }
+        let built = batch.run(&batch_root, None, current_arch)?;
+        let names = component_names_for_arch(&root, current_arch)?;
+        eprintln!("Built {} batch at {} [{}]", current_arch, built.display(), names.join(", "));
+    }
+
+    regenerate_root_cmake(&root)?;
     Ok(())
 }
+
+
+
+
+
+
+
 
 
 

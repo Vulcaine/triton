@@ -1,6 +1,6 @@
 # Triton — The Build Tool
 
-> **Status:** beta (0.9.0) | **OS:** Windows (tested), Linux/macOS (experimental)
+> **Status:** beta (0.9.1) | **OS:** Windows (tested), Linux/macOS (experimental)
 
 A C++ project manager that wires CMake and vcpkg together. Define dependencies in `triton.json`, and Triton handles `find_package`, `target_link_libraries`, vcpkg manifests, and git vendoring — so you don't have to.
 
@@ -56,15 +56,17 @@ triton run .                      # run the default executable
 | `triton init --name <dir>` | Create a new project in `<dir>` |
 | `triton init .` | Minimal init in current directory |
 | `triton add <deps...>` | Add dependencies, optionally link to components |
+| `triton add <dep> --features f1,f2` | Add with vcpkg features |
 | `triton remove <dep>` | Remove a dependency entirely |
+| `triton remove-component <name>` | Delete a component and unlink from dependents |
 | `triton link <A>:<B>` | Link dep or component A to component B |
 | `triton unlink <A>:<B>` | Remove link from component B to A |
-| `triton unlink <A>` | Remove A from all components' link lists |
 | `triton generate` | Regenerate CMake files from `triton.json` |
 | `triton build <path>` | Configure + build |
+| `triton build <path> --arch x86` | Cross-compile for a different architecture |
 | `triton run <path>` | Run a built component |
 | `triton test <path>` | Run tests via CTest |
-| `triton find-target <dep>` | Search for a dep's CMake package name |
+| `triton find-target <dep>` | Discover CMake package name and targets |
 | `triton cmake install` | Install or upgrade CMake |
 | `triton <script>` | Run a custom script defined in `triton.json` |
 
@@ -82,22 +84,25 @@ triton init .                              # init in current dir (no scaffold)
 ```bash
 triton add lua sol2                  # add deps (no linking)
 triton add lua:Game sol2:Game        # add + link to component 'Game'
+triton add directxtex --features dx12  # add with vcpkg features
 triton add org/repo                  # add git dependency
 triton add org/repo@v1.0             # git dep with branch/tag
 triton add org/repo@v1.0:Renderer    # git dep + link to component
 ```
 
-- **vcpkg deps** are transactional — if `vcpkg install` fails, `vcpkg.json` is reverted and the dep is not recorded.
-- **Git deps** are recorded only if the clone (and optional checkout) succeeds.
 - Linking to a non-existent component auto-scaffolds it as a `lib`.
-- **Auto-detection**: After install, Triton scans `vcpkg/installed/<triplet>/share/` to discover the correct CMake package name. If the package name differs from the dep name (e.g., `openal-soft` installs as `OpenAL`), Triton automatically sets the `package` field.
+- **Auto-detection**: After install, Triton scans `vcpkg_installed/<triplet>/share/` to discover the correct CMake package name and targets. If the package name differs from the dep name (e.g., `openal-soft` installs as `OpenAL`), Triton automatically sets the `package` field. Targets like `Microsoft::DirectXTex` are discovered from `*Targets.cmake` files.
+- **Features**: `--features dx12,dx11` stores the dep as a detailed entry with features and writes the correct vcpkg manifest object form.
 
 ### `remove`
 
 ```bash
 triton remove lua                       # remove entirely from project
 triton remove lua --component Game      # unlink from specific component only
+triton remove-component UI              # delete component entirely
 ```
+
+`remove-component` deletes the component from `triton.json`, unlinks it from all dependents, removes the on-disk `components/<name>/` directory, and regenerates CMake.
 
 ### `link`
 
@@ -107,6 +112,14 @@ triton link Core:Game          # link component to component
 ```
 
 Creates missing components as `lib` by default.
+
+**Link visibility**: By default, deps are linked `PRIVATE`. To re-export a dep publicly (so dependents inherit it), add it to the component's `exports` list, or use the `visibility` field on the link entry:
+
+```json
+"link": [
+  { "name": "glm", "visibility": "PUBLIC" }
+]
+```
 
 ### `unlink`
 
@@ -122,11 +135,16 @@ Only removes the link — the dep itself stays in `triton.json`. Use `triton rem
 ```bash
 triton build .                    # debug (default)
 triton build . --config release   # release
+triton build . --arch x86         # cross-compile for x86
 triton build . --clean            # clean build dir (prompts first)
 triton build . --cleanf           # force clean (no prompt)
 ```
 
+Build output goes to `build/<arch>/<config>/` (e.g., `build/x64/debug/`).
+
 If a `pre_build` script is defined in `triton.json`, it runs automatically before each build.
+
+Supported `--arch` values: `x86`, `x64`, `arm64` (aliases: `win32`, `amd64`, `aarch64`, `32`, `64`).
 
 ### `run`
 
@@ -155,15 +173,22 @@ Environment variables for test filtering:
 
 ### `find-target`
 
-Debug command to discover what CMake package name vcpkg uses for a dependency.
+Discover the CMake package name and targets for an installed vcpkg dependency.
 
 ```bash
-triton find-target openal-soft    # → Found: OpenAL
-triton find-target sdl2           # → Found multiple: SDL2, SDL2_mixer, SDL2_image, ...
-triton find-target directxtex     # → Found: DirectXTex
+triton find-target openal-soft    # Found: OpenAL, Targets: [OpenAL::OpenAL]
+triton find-target directxtex     # Found: directxtex, Targets: [Microsoft::DirectXTex]
+triton find-target sdl2           # Found: SDL2, Targets: [SDL2::SDL2, SDL2::SDL2main, ...]
 ```
 
-Scans `vcpkg/installed/<triplet>/share/` for Config.cmake files and matches them against the dep name using case-insensitive and hyphen/underscore normalization. When a match is found, it shows the suggested `triton.json` entry.
+Scans `vcpkg_installed/<triplet>/share/` for Config.cmake and Targets.cmake files. Shows the suggested `triton.json` link entry with the correct package name and target names.
+
+### `generate`
+
+Regenerates all CMake files and `vcpkg.json` from `triton.json`. Also:
+- Fixes malformed deps (e.g., `"pkg[feature]"` strings converted to proper detailed entries)
+- Deduplicates deps (merges features, prefers entries with package names)
+- Idempotent — running twice produces identical output
 
 ---
 
@@ -224,24 +249,33 @@ This is the single source of truth for your project.
       "os": ["windows", "linux"],
       "features": ["lite"],
       "package": "Protobuf"
+    },
+    {
+      "name": "directxtex",
+      "package": "directxtex",
+      "features": ["dx12"]
     }
   ],
   "components": {
     "myapp": {
       "kind": "exe",
+      "arch": "x64",
       "link": [
         "sdl2",
-        "glm",
+        { "name": "glm", "visibility": "PUBLIC" },
         "core",
         { "name": "filament", "targets": ["filament", "utils"] },
         { "name": "rmlui", "package": "RmlUi", "targets": ["RmlUi::RmlUi"] }
       ],
       "defines": ["APP_VERSION=1"],
       "exports": ["glm"],
+      "sources": ["extra/generated.cpp"],
+      "include_dirs": ["extra/include", "@root/shared/include"],
       "resources": ["resources"],
       "assets": ["data", "config.json"],
       "link_options": ["-Wl,--export-dynamic"],
-      "vendor_libs": ["vendor/libfoo.a"]
+      "vendor_libs": ["vendor/libfoo.a"],
+      "system_libs": ["d3d12", "dxgi"]
     },
     "core": {
       "kind": "lib",
@@ -320,13 +354,19 @@ This is the single source of truth for your project.
 | Field | Type | Description |
 |-------|------|-------------|
 | `kind` | `"exe"` or `"lib"` | Component type (required) |
+| `arch` | string | Target architecture override (`x86`, `x64`, `arm64`) |
 | `link` | array | Deps and components to link against |
+| `system_libs` | string[] | System libraries to link (e.g., `"d3d12"`, `"dxgi"`) |
 | `defines` | string[] | Preprocessor defines (`"KEY=VALUE"`) |
 | `exports` | string[] | Re-export these deps PUBLIC to dependents |
+| `sources` | string[] | Extra source files to compile. Use `@root/...` for project-root-relative paths |
+| `include_dirs` | string[] | Extra include directories. Use `@root/...` for project-root-relative paths. Exe uses `PRIVATE`, lib uses `PUBLIC` |
 | `resources` | string[] | Directories copied next to executable on build |
-| `assets` | string[] | Files/dirs staged incrementally (only copies changes) |
+| `assets` | string[] | Files/dirs staged incrementally (only copies changes). Use `@root/...` for project-root-relative paths |
 | `link_options` | string[] or object | Linker flags (see below) |
 | `vendor_libs` | string[] or object | Pre-built library files (see below) |
+
+> When `sources` or `include_dirs` are specified, Triton uses them as the authoritative source/include configuration for that component. When omitted, Triton auto-discovers files from the conventional `src/` and `include/` directories — but this auto-discovery may not work reliably with non-standard project layouts or non-CMake targets.
 
 **Link entries** support multiple formats:
 
@@ -334,9 +374,17 @@ This is the single source of truth for your project.
 "link": [
   "sdl2",
   { "name": "filament", "targets": ["filament", "utils"] },
-  { "name": "rmlui", "package": "RmlUi", "targets": ["RmlUi::RmlUi"] }
+  { "name": "rmlui", "package": "RmlUi", "targets": ["RmlUi::RmlUi"] },
+  { "name": "glm", "visibility": "PUBLIC" }
 ]
 ```
+
+| Link field | Description |
+|------------|-------------|
+| `name` | Dependency or component name |
+| `package` | Override CMake `find_package()` name |
+| `targets` | Explicit CMake targets to link |
+| `visibility` | `"PUBLIC"`, `"PRIVATE"` (default), or `"INTERFACE"` |
 
 **Platform-specific `link_options` and `vendor_libs`:**
 
@@ -353,7 +401,7 @@ This is the single source of truth for your project.
 }
 ```
 
-Or use a flat array to apply to all platforms.
+Or use a flat array to apply to all platforms. On Windows, vendor `.lib` import libraries automatically have their sibling `.dll` files copied next to the executable — including DLLs from transitively-linked library components.
 
 ### Scripts
 
@@ -378,10 +426,10 @@ myapp/
 ├── triton.json                  # your project config
 ├── vcpkg.json                   # managed by Triton
 ├── components/
-│   ├── CMakeLists.txt           # generated: adds subdirectories
-│   ├── CMakePresets.json        # generated: build presets
+│   ├── CMakeLists.txt           # generated
+│   ├── CMakePresets.json        # generated
 │   ├── myapp/
-│   │   ├── CMakeLists.txt       # managed regions inside
+│   │   ├── CMakeLists.txt       # fully managed by Triton
 │   │   ├── src/
 │   │   └── include/
 │   └── core/
@@ -389,24 +437,14 @@ myapp/
 │       ├── src/
 │       └── include/
 ├── third_party/                 # git deps cloned here
+├── vcpkg_installed/             # vcpkg packages (manifest mode)
 └── build/
-    ├── debug/
-    └── release/
+    └── x64/
+        ├── debug/
+        └── release/
 ```
 
-### Managed regions
-
-Triton owns specific blocks inside component `CMakeLists.txt` files:
-
-```cmake
-# ## triton:deps begin
-# (generated by Triton — do not edit)
-# ## triton:deps end
-```
-
-Everything outside these blocks is yours and will never be touched. Run `triton generate` to refresh them after manually editing `triton.json`.
-
-> **Warning:** Avoid editing `CMakeLists.txt` files directly. Triton is designed to handle all CMake configuration through `triton.json` — manual CMake edits should be a last resort. If you find yourself needing to touch CMake directly, consider whether the change belongs in `triton.json` instead (e.g. `defines`, `link_options`, `exports`, `vendor_libs`, `resources`, `assets`).
+> **Note:** Triton fully manages all `CMakeLists.txt` files. Avoid editing them directly — define everything through `triton.json` instead (e.g., `defines`, `link_options`, `exports`, `vendor_libs`, `resources`, `assets`, `sources`, `include_dirs`). Run `triton generate` to refresh after editing `triton.json`.
 
 ## Initializing an Existing Project
 

@@ -11,6 +11,7 @@ pub enum Change {
     Unchanged,
 }
 
+#[allow(dead_code)]
 pub fn read_to_string_opt<P: AsRef<Path>>(p: P) -> Option<String> {
     fs::read_to_string(p.as_ref()).ok()
 }
