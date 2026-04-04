@@ -13,7 +13,7 @@ use triton::models::*;
 use triton::util::*;
 
 mod test_utils;
-use test_utils::write_file;
+use test_utils::{write_file, CwdGuard};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -140,7 +140,7 @@ fn match_returns_empty_for_unknown() {
 #[serial]
 fn find_target_single_match() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     create_fake_share(td.path(), &triton::cmake::detect_vcpkg_triplet(), &["OpenAL"]);
 
     // Should succeed without error
@@ -152,7 +152,7 @@ fn find_target_single_match() {
 #[serial]
 fn find_target_multiple_matches() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     let triplet = triton::cmake::detect_vcpkg_triplet();
     create_fake_share(td.path(), &triplet, &["SDL2", "SDL2_mixer", "SDL2_image"]);
 
@@ -164,7 +164,7 @@ fn find_target_multiple_matches() {
 #[serial]
 fn find_target_no_match() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     let triplet = triton::cmake::detect_vcpkg_triplet();
     create_fake_share(td.path(), &triplet, &["SDL2"]);
 
@@ -176,7 +176,7 @@ fn find_target_no_match() {
 #[serial]
 fn find_target_no_share_dir() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     // No vcpkg dir at all
 
     let result = handle_find_target("anything");
@@ -187,7 +187,7 @@ fn find_target_no_share_dir() {
 #[serial]
 fn find_target_case_insensitive() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     let triplet = triton::cmake::detect_vcpkg_triplet();
     create_fake_share(td.path(), &triplet, &["DirectXTex"]);
 
@@ -553,7 +553,7 @@ fn detect_cycles_skips_when_link_target_is_also_a_dep() {
 fn link_rejects_self_link() {
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
 
     // Write minimal resources for link command
     let res = root_path.join("resources");
@@ -594,7 +594,7 @@ fn link_rejects_self_link() {
 fn generate_rejects_invalid_kind() {
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
 
     let mut components = BTreeMap::new();
     components.insert(

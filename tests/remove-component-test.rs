@@ -10,7 +10,7 @@ use triton::models::{DepSpec, LinkEntry, TritonComponent, TritonRoot};
 use triton::util::{read_json, write_json_pretty_changed};
 
 mod test_utils;
-use test_utils::{write_file, write_minimal_resources};
+use test_utils::{write_file, write_minimal_resources, CwdGuard};
 
 fn seed_project(root: &Path, tr: &TritonRoot) {
     fs::create_dir_all(root.join("components")).unwrap();
@@ -44,7 +44,7 @@ fn make_root(components: Vec<(&str, TritonComponent)>) -> TritonRoot {
 fn remove_component_deletes_from_triton_json_and_disk() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let meta = make_root(vec![
         ("Core", TritonComponent { kind: "lib".into(), ..Default::default() }),
@@ -69,7 +69,7 @@ fn remove_component_deletes_from_triton_json_and_disk() {
 fn remove_component_unlinks_from_dependents() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let meta = make_root(vec![
         ("Engine", TritonComponent {
@@ -112,7 +112,7 @@ fn remove_component_unlinks_from_dependents() {
 fn remove_component_clears_exports_referencing_it() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let meta = make_root(vec![
         ("Core", TritonComponent {
@@ -144,7 +144,7 @@ fn remove_component_clears_exports_referencing_it() {
 fn remove_nonexistent_component_returns_error() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let meta = make_root(vec![
         ("App", TritonComponent { kind: "exe".into(), ..Default::default() }),
@@ -161,7 +161,7 @@ fn remove_nonexistent_component_returns_error() {
 fn remove_component_preserves_deps() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let meta = make_root(vec![
         ("Core", TritonComponent {

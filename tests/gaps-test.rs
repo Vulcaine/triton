@@ -19,7 +19,7 @@ use triton::models::*;
 use triton::util::{read_json, write_json_pretty_changed};
 
 mod test_utils;
-use test_utils::{copy_offline_vcpkg_to, write_file, write_minimal_resources};
+use test_utils::{copy_offline_vcpkg_to, write_file, write_minimal_resources, CwdGuard};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,7 +88,7 @@ fn invalid_kind_generates_cmake_without_error() {
     // GAP: Even during CMake generation, an invalid kind doesn't cause an error.
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let comp = TritonComponent {
@@ -124,7 +124,7 @@ fn component_can_link_to_itself() {
     let td = tempdir().unwrap();
     let root_path = td.path();
     write_minimal_resources(root_path);
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
 
     let mut components = BTreeMap::new();
     components.insert(
@@ -161,7 +161,7 @@ fn circular_component_deps_accepted() {
     let td = tempdir().unwrap();
     let root_path = td.path();
     write_minimal_resources(root_path);
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
 
     let mut components = BTreeMap::new();
     components.insert("A".into(), default_component("lib"));
@@ -197,7 +197,7 @@ fn remove_detailed_dep_globally() {
     // Verify that removing a DepSpec::Detailed dep works (not just Simple).
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let mut components = BTreeMap::new();
     components.insert(
@@ -285,7 +285,7 @@ fn component_links_to_nonexistent_dep_accepted() {
     // `components`. This produces broken CMake at build time, not at config time.
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let json = r#"{
@@ -316,7 +316,7 @@ fn generate_with_unknown_link_produces_no_cmake_for_it() {
     // the generated CMake silently skips it — no warning at generate time.
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let mut components = BTreeMap::new();
@@ -377,7 +377,7 @@ fn empty_app_name_accepted() {
 fn generate_vendor_libs_all_platforms() {
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let comp = TritonComponent {
@@ -417,7 +417,7 @@ fn generate_vendor_libs_all_platforms() {
 fn generate_vendor_libs_per_platform() {
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let mut platform_map = BTreeMap::new();
@@ -463,7 +463,7 @@ fn generate_vendor_libs_per_platform() {
 fn generate_link_options_all_platforms() {
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let comp = TritonComponent {
@@ -503,7 +503,7 @@ fn generate_link_options_all_platforms() {
 fn generate_link_options_per_platform() {
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let mut platform_map = BTreeMap::new();
@@ -547,7 +547,7 @@ fn generate_link_options_per_platform() {
 fn generate_assets_produces_incremental_staging() {
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let comp = TritonComponent {
@@ -601,7 +601,7 @@ fn generate_os_filtered_dep_excluded_on_wrong_os() {
     let proj = td.path().join("os-filter");
     fs::create_dir_all(&proj).unwrap();
     copy_offline_vcpkg_to(&proj);
-    std::env::set_current_dir(&proj).unwrap();
+    let _guard = CwdGuard::set(&proj);
 
     handle_init(Some("."), "Ninja", "20").unwrap();
 
@@ -647,7 +647,7 @@ fn generate_os_filtered_dep_excluded_on_wrong_os() {
 fn exports_field_generates_public_link() {
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let mut components = BTreeMap::new();
@@ -691,7 +691,7 @@ fn exports_field_generates_public_link() {
 fn add_same_dep_to_two_components_no_duplicate_in_deps() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     write_file(
         root.join("triton.json"),
@@ -767,7 +767,7 @@ fn add_same_dep_to_two_components_no_duplicate_in_deps() {
 fn generate_git_dep_with_cmake_overrides() {
     let td = tempdir().unwrap();
     let root_path = td.path();
-    std::env::set_current_dir(root_path).unwrap();
+    let _guard = CwdGuard::set(root_path);
     write_minimal_resources(root_path);
 
     let comp = TritonComponent {
@@ -837,7 +837,7 @@ fn remove_keeps_detailed_dep_features_in_vcpkg_json() {
     // should still appear correctly in vcpkg.json
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let meta = TritonRoot {
         app_name: "demo".into(),

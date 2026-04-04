@@ -10,6 +10,9 @@ use triton::commands::remove::handle_remove;
 use triton::models::{LinkEntry, DepSpec, TritonComponent, TritonRoot};
 use triton::util::{read_json, write_json_pretty_changed};
 
+mod test_utils;
+use test_utils::CwdGuard;
+
 fn assert_exists(p: &Path) {
     assert!(p.exists(), "expected to exist: {}", p.display());
 }
@@ -39,7 +42,7 @@ fn mk_component_dirs(root: &Path, name: &str) {
 fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     // Triton metadata: two vcpkg deps, two components A and B, both link "glm"
     let mut meta = TritonRoot {
@@ -99,7 +102,7 @@ fn remove_unlinks_only_from_target_component_when_component_opt_is_used() {
 fn remove_vcpkg_dep_globally_updates_manifest_and_unlinks_everywhere() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     // Root has glm + sdl2; two components link both
     let mut meta = TritonRoot {
@@ -159,7 +162,7 @@ fn remove_vcpkg_dep_globally_updates_manifest_and_unlinks_everywhere() {
 fn remove_git_dep_globally_unlinks_everywhere_and_prunes_third_party_if_unused() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     // One git dep "filament" + a vcpkg dep to ensure vcpkg.json still valid
     let git = DepSpec::Git(triton::models::GitDep {
@@ -226,7 +229,7 @@ fn remove_git_dep_globally_unlinks_everywhere_and_prunes_third_party_if_unused()
 fn remove_from_missing_component_returns_error() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let meta = TritonRoot {
         app_name: "demo".into(),
@@ -252,7 +255,7 @@ fn remove_from_missing_component_returns_error() {
 fn remove_twice_is_idempotent() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let mut meta = TritonRoot {
         app_name: "demo".into(),
@@ -292,7 +295,7 @@ fn remove_twice_is_idempotent() {
 fn remove_preserves_features_in_vcpkg_json() {
     let td = tempdir().unwrap();
     let root = td.path();
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     let mut meta = TritonRoot {
         app_name: "demo".into(),

@@ -9,7 +9,7 @@ use triton::models::{DepSpec, LinkEntry, TritonComponent, TritonRoot};
 use triton::util::{read_json, write_json_pretty_changed};
 
 mod test_utils;
-use test_utils::write_minimal_resources;
+use test_utils::{write_minimal_resources, CwdGuard};
 
 /// Start a minimal project at `tmp`, with given deps and no components yet.
 fn init_project(tmp: &Path, deps: &[DepSpec]) {
@@ -37,7 +37,7 @@ fn link_dep_into_component_adds_dep_and_generates_cmake() {
     let root = td.path();
     write_minimal_resources(root);
     init_project(root, &[DepSpec::Simple("glm".into())]);
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     // glm:Core  => Core depends on glm
     handle_link("glm", "Core").expect("link dep->component");
@@ -69,7 +69,7 @@ fn link_component_to_component_is_rhs_directional() {
     let root = td.path();
     write_minimal_resources(root);
     init_project(root, &[]);
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     // Pre-create Engine as a component
     {
@@ -139,7 +139,7 @@ fn rhs_cannot_be_a_dep() {
     let root = td.path();
     write_minimal_resources(root);
     init_project(root, &[DepSpec::Simple("sdl2".into())]);
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     // Engine:sdl2 => invalid (RHS must be a component)
     let err = handle_link("Engine", "sdl2").err().expect("should error");
@@ -157,7 +157,7 @@ fn linking_is_idempotent() {
     let root = td.path();
     write_minimal_resources(root);
     init_project(root, &[]);
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     handle_link("A", "B").unwrap();
     handle_link("A", "B").unwrap();
@@ -182,7 +182,7 @@ fn link_preserves_existing_defines() {
     let root = td.path();
     write_minimal_resources(root);
     init_project(root, &[DepSpec::Simple("glm".into())]);
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     // Pre-create a component with defines
     {
@@ -240,7 +240,7 @@ fn link_preserves_exports() {
             DepSpec::Simple("sdl2".into()),
         ],
     );
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     // Pre-create a component with exports and an existing link
     {
@@ -298,7 +298,7 @@ fn link_dep_with_named_entry_package_hint() {
             DepSpec::Simple("entt".into()),
         ],
     );
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     // Pre-create a component with a Named LinkEntry (with package hint)
     {
@@ -365,7 +365,7 @@ fn link_multiple_deps_sequentially() {
             DepSpec::Simple("sdl2".into()),
         ],
     );
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     handle_link("glm", "Core").expect("link glm->Core");
     handle_link("sdl2", "Core").expect("link sdl2->Core");
@@ -395,7 +395,7 @@ fn link_creates_component_cmake_with_deps_markers() {
     let root = td.path();
     write_minimal_resources(root);
     init_project(root, &[DepSpec::Simple("glm".into())]);
-    std::env::set_current_dir(root).unwrap();
+    let _guard = CwdGuard::set(root);
 
     handle_link("glm", "Render").expect("link glm->Render");
 

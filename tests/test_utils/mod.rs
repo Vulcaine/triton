@@ -6,6 +6,26 @@ use std::{env, ffi::OsString};
 
 use anyhow::Result;
 
+/// RAII guard that sets the current working directory and restores the
+/// previous one on drop.
+pub struct CwdGuard {
+    prev: PathBuf,
+}
+
+impl CwdGuard {
+    pub fn set(dir: &Path) -> Self {
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+        CwdGuard { prev }
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.prev);
+    }
+}
+
 /// Write a file at `path`, creating parent directories as needed.
 pub fn write_file(path: impl AsRef<Path>, s: &str) {
     if let Some(parent) = path.as_ref().parent() {

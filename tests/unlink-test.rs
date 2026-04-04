@@ -12,7 +12,7 @@ use triton::models::*;
 use triton::util::{read_json, write_json_pretty_changed};
 
 mod test_utils;
-use test_utils::write_file;
+use test_utils::{write_file, CwdGuard};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,7 +120,7 @@ fn seed_project(root: &Path) {
 #[serial]
 fn unlink_from_specific_component() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     seed_project(td.path());
 
     // Game links to [glm, sdl2, Core]. Unlink sdl2 from Game.
@@ -147,7 +147,7 @@ fn unlink_from_specific_component() {
 #[serial]
 fn unlink_from_all_components() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     seed_project(td.path());
 
     // sdl2 is linked in Game and Render. Unlink from all.
@@ -172,7 +172,7 @@ fn unlink_from_all_components() {
 #[serial]
 fn unlink_nonexistent_link_is_noop() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     seed_project(td.path());
 
     // "boost" is not linked anywhere — should succeed silently
@@ -189,7 +189,7 @@ fn unlink_nonexistent_link_is_noop() {
 #[serial]
 fn unlink_from_missing_component_errors() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     seed_project(td.path());
 
     let result = handle_unlink("glm", Some("NonExistent"));
@@ -202,7 +202,7 @@ fn unlink_from_missing_component_errors() {
 #[serial]
 fn unlink_component_dep_preserves_deps_list() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     seed_project(td.path());
 
     // Unlink glm from Core — should NOT remove glm from root.deps
@@ -219,7 +219,7 @@ fn unlink_component_dep_preserves_deps_list() {
 #[serial]
 fn unlink_case_insensitive() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     seed_project(td.path());
 
     // Unlink "GLM" (uppercase) from Game — should match "glm"
@@ -237,7 +237,7 @@ fn unlink_case_insensitive() {
 #[serial]
 fn unlink_regenerates_cmake() {
     let td = tempdir().unwrap();
-    std::env::set_current_dir(td.path()).unwrap();
+    let _guard = CwdGuard::set(td.path());
     seed_project(td.path());
 
     handle_unlink("sdl2", Some("Game")).unwrap();
