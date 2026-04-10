@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::models::{DepSpec, GitDep, TritonComponent, TritonRoot};
-use crate::util::{cmake_quote, infer_cmake_type, split_kv};
+use crate::util::{cmake_quote, expand_placeholders, infer_cmake_type, split_kv};
 
 use super::resolution::{build_effective_git_specs, build_effective_vcpkg_specs};
 
@@ -9,8 +9,16 @@ fn normalize_staged_path(raw: &str) -> String {
     raw.trim().replace('\\', "/")
 }
 
-fn staged_source_expr(raw: &str, current_source_var: &str) -> (String, String) {
-    let normalized = normalize_staged_path(raw);
+fn expand_staged_vars(raw: &str, root: Option<&TritonRoot>, config: Option<&str>) -> String {
+    expand_placeholders(raw, root, config)
+}
+
+fn staged_source_expr(root: Option<&TritonRoot>, raw: &str, current_source_var: &str) -> (String, String) {
+    staged_source_expr_cfg(root, raw, current_source_var, None)
+}
+
+fn staged_source_expr_cfg(root: Option<&TritonRoot>, raw: &str, current_source_var: &str, config: Option<&str>) -> (String, String) {
+    let normalized = normalize_staged_path(&expand_staged_vars(raw, root, config));
     if let Some(rest) = normalized.strip_prefix("@root/") {
         (format!("${{CMAKE_SOURCE_DIR}}/../{}", rest), rest.to_string())
     } else {
@@ -206,12 +214,12 @@ endif()",
     lines
 }
 
-pub(super) fn gen_component_resources_lines(comp: &TritonComponent) -> Vec<String> {
+pub(super) fn gen_component_resources_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
     let mut lines = vec![];
     for raw in &comp.resources {
         let raw = raw.trim();
         if raw.is_empty() { continue; }
-        let (source_expr, display_path) = staged_source_expr(raw, "${CMAKE_CURRENT_SOURCE_DIR}");
+        let (source_expr, display_path) = staged_source_expr(Some(root),raw, "${CMAKE_CURRENT_SOURCE_DIR}");
         let dest_name = Path::new(&display_path)
             .file_name()
             .and_then(|n| n.to_str())
@@ -230,7 +238,7 @@ pub(super) fn gen_component_resources_lines(comp: &TritonComponent) -> Vec<Strin
     lines
 }
 
-pub(super) fn gen_component_include_dirs_lines(comp: &TritonComponent) -> Vec<String> {
+pub(super) fn gen_component_include_dirs_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
     if comp.include_dirs.is_empty() {
         return vec![];
     }
@@ -242,7 +250,7 @@ pub(super) fn gen_component_include_dirs_lines(comp: &TritonComponent) -> Vec<St
         if raw.is_empty() {
             continue;
         }
-        let (source_expr, _) = staged_source_expr(raw, "${CMAKE_CURRENT_SOURCE_DIR}");
+        let (source_expr, _) = staged_source_expr(Some(root),raw, "${CMAKE_CURRENT_SOURCE_DIR}");
         lines.push(format!(
             "target_include_directories(${{_comp_name}} {vis} \"{source_expr}\")",
             vis = vis,
@@ -252,7 +260,7 @@ pub(super) fn gen_component_include_dirs_lines(comp: &TritonComponent) -> Vec<St
     lines
 }
 
-pub(super) fn gen_component_extra_sources_lines(comp: &TritonComponent) -> Vec<String> {
+pub(super) fn gen_component_extra_sources_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
     if comp.sources.is_empty() {
         return vec![];
     }
@@ -263,7 +271,7 @@ pub(super) fn gen_component_extra_sources_lines(comp: &TritonComponent) -> Vec<S
         if raw.is_empty() {
             continue;
         }
-        let (source_expr, display_path) = staged_source_expr(raw, "${CMAKE_CURRENT_SOURCE_DIR}");
+        let (source_expr, display_path) = staged_source_expr(Some(root),raw, "${CMAKE_CURRENT_SOURCE_DIR}");
         lines.push(format!("if(EXISTS \"{source_expr}\")", source_expr = source_expr));
         lines.push(format!(
             "  target_sources(${{_comp_name}} PRIVATE \"{source_expr}\")",
@@ -279,14 +287,17 @@ pub(super) fn gen_component_extra_sources_lines(comp: &TritonComponent) -> Vec<S
     lines
 }
 
-pub(super) fn gen_component_vendor_libs_lines(comp: &TritonComponent) -> Vec<String> {
+pub(super) fn gen_component_vendor_libs_lines(root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
     use crate::models::VendorLibs;
     match &comp.vendor_libs {
         VendorLibs::None => vec![],
         VendorLibs::All(libs) => {
             if libs.is_empty() { return vec![]; }
             let paths: Vec<String> = libs.iter()
-                .map(|p| format!("    \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\"", p))
+                .map(|p| {
+                    let (source_expr, _) = staged_source_expr(Some(root),p, "${CMAKE_CURRENT_SOURCE_DIR}");
+                    format!("    \"{}\"", source_expr)
+                })
                 .collect();
             let mut lines = vec!["target_link_libraries(${_comp_name} PRIVATE".into()];
             lines.extend(paths);
@@ -299,7 +310,10 @@ pub(super) fn gen_component_vendor_libs_lines(comp: &TritonComponent) -> Vec<Str
                 if libs.is_empty() { continue; }
                 let condition_str = super::platform_to_cmake_condition(platform);
                 let paths: Vec<String> = libs.iter()
-                    .map(|p| format!("    \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\"", p))
+                    .map(|p| {
+                        let (source_expr, _) = staged_source_expr(Some(root),p, "${CMAKE_CURRENT_SOURCE_DIR}");
+                        format!("    \"{}\"", source_expr)
+                    })
                     .collect();
                 lines.push(format!("if({})", condition_str));
                 lines.push("  target_link_libraries(${_comp_name} PRIVATE".into());
@@ -308,19 +322,18 @@ pub(super) fn gen_component_vendor_libs_lines(comp: &TritonComponent) -> Vec<Str
                 }
                 lines.push("  )".into());
 
-                // On Windows, .lib files are import libraries -- copy sibling .dll
-                // files next to the executable so they're found at runtime.
                 if platform.to_ascii_lowercase() == "windows" {
                     for lib_path in libs {
                         if lib_path.ends_with(".lib") {
                             let dll_path = format!("{}dll", &lib_path[..lib_path.len() - 3]);
+                            let (dll_source_expr, _) = staged_source_expr(Some(root),&dll_path, "${CMAKE_CURRENT_SOURCE_DIR}");
                             lines.push(format!(
-                                "  if(EXISTS \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\")",
-                                dll_path
+                                "  if(EXISTS \"{}\")",
+                                dll_source_expr
                             ));
                             lines.push(format!(
-                                "    add_custom_command(TARGET ${{_comp_name}} POST_BUILD COMMAND ${{CMAKE_COMMAND}} -E copy_if_different \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\" \"$<TARGET_FILE_DIR:${{_comp_name}}>\")",
-                                dll_path
+                                "    add_custom_command(TARGET ${{_comp_name}} POST_BUILD COMMAND ${{CMAKE_COMMAND}} -E copy_if_different \"{}\" \"$<TARGET_FILE_DIR:${{_comp_name}}>\")",
+                                dll_source_expr
                             ));
                             lines.push("  endif()".into());
                         }
@@ -405,17 +418,18 @@ pub(super) fn gen_component_defines_lines(comp: &TritonComponent) -> Vec<String>
 ///  - File: copy into `$<TARGET_FILE_DIR:...>` if changed.
 /// Each copy rule produces a stamp file in the binary dir and we depend on all
 /// stamps via a `${_comp_name}_assets` target wired into the component.
-pub(super) fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> {
+pub(super) fn gen_component_assets_lines(root: &TritonRoot, comp: &TritonComponent, config: Option<&str>) -> Vec<String> {
     if comp.assets.is_empty() {
         return vec![];
     }
 
-    // Helper to turn an asset path into a CMake-variable-safe id
     let make_id = |s: &str| -> String {
         s.chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
             .collect()
     };
+    let has_glob = |s: &str| s.contains('*') || s.contains('?') || s.contains('[');
+    let is_recursive_glob = |s: &str| s.contains("**");
 
     let mut lines = vec![];
     lines.push("# --- triton: stage component assets next to target (incremental) ---".into());
@@ -426,16 +440,35 @@ pub(super) fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> 
         if a.is_empty() {
             continue;
         }
-        let (source_expr, display_path) = staged_source_expr(a, "${CMAKE_CURRENT_SOURCE_DIR}");
+        let (source_expr, display_path) = staged_source_expr_cfg(Some(root), a, "${CMAKE_CURRENT_SOURCE_DIR}", config);
         let id = make_id(&display_path);
 
-        // Variables unique per asset
-        //   _triton_asset_src_<id>
-        //   _triton_asset_dst_<id>
-        //   _triton_asset_name_<id>
-        //   _triton_asset_files_<id>
-        //   _triton_asset_stamp_<id>
         lines.push(format!("set(_triton_asset_src_{id} \"{source_expr}\")"));
+
+        if has_glob(a) {
+            let glob_cmd = if is_recursive_glob(a) { "GLOB_RECURSE" } else { "GLOB" };
+            lines.push(format!(
+                "file({glob_cmd} _triton_asset_matches_{id} LIST_DIRECTORIES false CONFIGURE_DEPENDS \"${{_triton_asset_src_{id}}}\")"
+            ));
+            lines.push(format!("if(_triton_asset_matches_{id})"));
+            lines.push(format!("  set(_triton_asset_dst_{id} \"$<TARGET_FILE_DIR:${{_comp_name}}>\")"));
+            lines.push(format!("  set(_triton_asset_stamp_{id} \"${{CMAKE_CURRENT_BINARY_DIR}}/${{_comp_name}}_assets_{id}.stamp\")"));
+            lines.push("  add_custom_command(".into());
+            lines.push(format!("    OUTPUT \"${{_triton_asset_stamp_{id}}}\""));
+            lines.push(format!("    COMMAND \"${{CMAKE_COMMAND}}\" -E make_directory \"${{_triton_asset_dst_{id}}}\""));
+            lines.push(format!("    COMMAND \"${{CMAKE_COMMAND}}\" -E copy_if_different ${{_triton_asset_matches_{id}}} \"${{_triton_asset_dst_{id}}}\""));
+            lines.push(format!("    COMMAND \"${{CMAKE_COMMAND}}\" -E touch \"${{_triton_asset_stamp_{id}}}\""));
+            lines.push(format!("    DEPENDS ${{_triton_asset_matches_{id}}} \"${{CMAKE_BINARY_DIR}}/CMakeCache.txt\""));
+            lines.push(format!("    COMMENT \"Copy asset glob: {display_path} -> ${{_triton_asset_dst_{id}}}\""));
+            lines.push("    VERBATIM".into());
+            lines.push("  )".into());
+            lines.push(format!("  list(APPEND _triton_asset_stamps \"${{_triton_asset_stamp_{id}}}\")"));
+            lines.push("else()".into());
+            lines.push(format!("  message(WARNING \"triton: asset glob matched nothing for '${{_comp_name}}': {display_path}\")"));
+            lines.push("endif()".into());
+            continue;
+        }
+
         lines.push(format!("if(EXISTS \"${{_triton_asset_src_{id}}}\")"));
         lines.push(format!("  if(IS_DIRECTORY \"${{_triton_asset_src_{id}}}\")"));
         lines.push(format!("    get_filename_component(_triton_asset_name_{id} \"${{_triton_asset_src_{id}}}\" NAME)"));
@@ -481,7 +514,6 @@ pub(super) fn gen_component_assets_lines(comp: &TritonComponent) -> Vec<String> 
 
     lines
 }
-
 /// For exe components, collect vendor DLLs from all transitively-linked lib components
 /// and generate POST_BUILD copy commands so the DLLs end up next to the exe.
 pub(super) fn gen_transitive_vendor_dll_copies(_name: &str, root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
@@ -528,7 +560,8 @@ pub(super) fn gen_transitive_vendor_dll_copies(_name: &str, root: &TritonRoot, c
         for lib_path in &win_libs {
             if lib_path.ends_with(".lib") {
                 let dll_path = format!("{}dll", &lib_path[..lib_path.len() - 3]);
-                let full_dll = format!("${{CMAKE_SOURCE_DIR}}/{}/{}",  comp_name, dll_path);
+                let component_source_var = format!("${{CMAKE_SOURCE_DIR}}/{}", comp_name);
+                let (full_dll, _) = staged_source_expr(Some(root),&dll_path, &component_source_var);
                 lines.push(format!("if(WIN32)"));
                 lines.push(format!(
                     "  if(EXISTS \"{}\")", full_dll
@@ -544,3 +577,6 @@ pub(super) fn gen_transitive_vendor_dll_copies(_name: &str, root: &TritonRoot, c
     }
     lines
 }
+
+
+

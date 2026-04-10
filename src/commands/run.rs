@@ -9,7 +9,7 @@ use walkdir::WalkDir;
 
 use crate::cmake::detect_vcpkg_triplet_for_arch;
 use crate::models::TritonRoot;
-use crate::util::read_json;
+use crate::util::{expand_placeholders, read_json};
 
 use super::build::handle_build;
 
@@ -151,21 +151,22 @@ fn find_executable(project: &Path, cfg: &str, component: Option<&str>) -> Result
 }
 
 pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[String]) -> Result<()> {
+    let cfg = normalize_config(config);
+
     // If `path` matches a script name in triton.json, delegate to the script runner.
     if let Ok(cwd) = std::env::current_dir() {
         if let Ok(root) = read_json::<_, TritonRoot>(cwd.join("triton.json")) {
             if root.scripts.contains_key(path) {
                 let mut tokens = vec![path.to_string()];
-                tokens.extend_from_slice(args);
-                return super::script::handle_script(&tokens);
+                tokens.extend(args.iter().map(|arg| expand_placeholders(arg, Some(&root), Some(cfg))));
+                return super::script::handle_script_with_context(&tokens, Some(cfg));
             }
         }
     }
 
     let project = PathBuf::from(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
-    let cfg = normalize_config(config);
+    let root: TritonRoot = read_json(project.join("triton.json"))?;
 
-    // Fast path: if exe exists and is newer than inputs, and cache exists -> skip build
     let need_build = {
         let cache_ok = cmake_cache_exists(&project, cfg, component);
         let exe_path_guess = find_executable(&project, cfg, component).ok();
@@ -183,13 +184,13 @@ pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[Str
         handle_build(&project.display().to_string(), component, cfg, None, false, false)?;
     }
 
-    // Run (re-find exe in case we just built it)
     let exe_path = find_executable(&project, cfg, component)?;
     eprintln!("Running {} â€¦", exe_path.display());
     let exe_dir = exe_path.parent().unwrap_or(&project);
     let run_path = prepend_existing_path_dirs(&runtime_search_dirs(&project, cfg, exe_dir, component)?)?;
+    let expanded_args = args.iter().map(|arg| expand_placeholders(arg, Some(&root), Some(cfg))).collect::<Vec<_>>();
     let status = Command::new(&exe_path)
-        .args(args)
+        .args(&expanded_args)
         .current_dir(exe_dir)
         .env("PATH", run_path)
         .status()
@@ -199,6 +200,8 @@ pub fn handle_run(path: &str, component: Option<&str>, config: &str, args: &[Str
     }
     Ok(())
 }
+
+
 
 
 

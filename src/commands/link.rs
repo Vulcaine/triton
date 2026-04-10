@@ -87,11 +87,11 @@ pub fn handle_link(from: &str, to: &str) -> Result<()> {
     let cmake_ver = effective_cmake_version();
     // Rewrite CMake for 'to' (and 'from' if new component)
     if let Some(c) = root.components.get(to) {
-        rewrite_component_cmake(to, &root, c, cmake_ver)?;
+        rewrite_component_cmake(to, &root, c, cmake_ver, None)?;
     }
     if !from_is_dep {
         if let Some(c) = root.components.get(from) {
-            rewrite_component_cmake(from, &root, c, cmake_ver)?;
+            rewrite_component_cmake(from, &root, c, cmake_ver, None)?;
         }
     }
 

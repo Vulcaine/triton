@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::models::TritonRoot;
-use crate::util;
+use crate::util::{self, expand_placeholders};
 
 #[cfg(windows)]
 fn is_shelly(s: &str) -> bool {
@@ -504,31 +504,36 @@ fn execute_direct_unix(
 // Main entry point
 // ---------------------------------------------------------------------------
 
-pub fn handle_script(tokens: &[String]) -> Result<()> {
+pub(crate) fn handle_script_with_context(tokens: &[String], config: Option<&str>) -> Result<()> {
     if tokens.is_empty() {
         bail!("No script name provided");
     }
 
     let script_name = &tokens[0];
-    let args = &tokens[1..].iter().map(|s| s.as_str()).collect::<Vec<_>>();
-
     let cwd = env::current_dir()?;
-    let scripts = load_scripts(&cwd)?;
+    let root: TritonRoot = util::read_json(cwd.join("triton.json"))?;
 
-    let raw = scripts
+    let raw = root
+        .scripts
         .get(script_name)
         .ok_or_else(|| anyhow!("Unknown script: {}", script_name))?;
-    let script: &str = raw.as_str();
+    let script_owned = expand_placeholders(raw, Some(&root), config);
+    let expanded_args = tokens[1..]
+        .iter()
+        .map(|s| expand_placeholders(s, Some(&root), config))
+        .collect::<Vec<_>>();
+    let args = expanded_args.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+    let script: &str = script_owned.as_str();
 
     #[cfg(windows)]
     {
         if detect_shell_invocation(script).is_some() {
-            return execute_via_shell_interpreter(script, args, &cwd, script_name);
+            return execute_via_shell_interpreter(script, &args, &cwd, script_name);
         }
         if is_shelly(script) {
-            return execute_via_cmd(script, args, &cwd, script_name);
+            return execute_via_cmd(script, &args, &cwd, script_name);
         }
-        return execute_direct_windows(script, args, &cwd, script_name);
+        return execute_direct_windows(script, &args, &cwd, script_name);
     }
 
     #[cfg(not(windows))]
@@ -537,15 +542,21 @@ pub fn handle_script(tokens: &[String]) -> Result<()> {
             return execute_and_check(
                 Command::new(interp)
                     .arg(rest)
-                    .args(args)
+                    .args(&args)
                     .current_dir(&cwd),
                 script_name,
                 &format!("spawn {} {}", interp, rest),
             );
         }
         if is_shelly(script) && !looks_like_path(script) {
-            return execute_via_sh(script, args, &cwd, script_name);
+            return execute_via_sh(script, &args, &cwd, script_name);
         }
-        return execute_direct_unix(script, args, &cwd, script_name);
+        return execute_direct_unix(script, &args, &cwd, script_name);
     }
 }
+
+pub fn handle_script(tokens: &[String]) -> Result<()> {
+    let config = env::var("CONFIG").ok();
+    handle_script_with_context(tokens, config.as_deref())
+}
+

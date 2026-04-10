@@ -31,7 +31,7 @@ pub fn handle_generate_for_triplet(trip: &str) -> Result<()> {
 
     // Rewrite all component CMakeLists
     for (name, comp) in &root.components {
-        rewrite_component_cmake(name, &root, comp, cmake_ver)?;
+        rewrite_component_cmake(name, &root, comp, cmake_ver, None)?;
     }
 
     // Root CMake

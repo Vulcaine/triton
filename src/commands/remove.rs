@@ -32,7 +32,7 @@ pub fn handle_remove(
         write_json_pretty_changed("triton.json", &root)?;
 
         for (name, comp) in &root.components {
-            rewrite_component_cmake(name, &root, comp, cmake_ver)?;
+            rewrite_component_cmake(name, &root, comp, cmake_ver, None)?;
         }
         regenerate_root_cmake(&root)?; 
 
@@ -95,7 +95,7 @@ pub fn handle_remove(
     }
 
     for (name, comp) in &root.components {
-        rewrite_component_cmake(name, &root, comp, cmake_ver)?;
+        rewrite_component_cmake(name, &root, comp, cmake_ver, None)?;
     }
     regenerate_root_cmake(&root)?; // ✅ fixed here too
     eprintln!("Removed '{}' from project.", pkg);

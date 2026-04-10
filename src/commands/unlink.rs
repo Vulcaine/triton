@@ -33,7 +33,7 @@ pub fn handle_unlink(from: &str, to: Option<&str>) -> Result<()> {
 
         // Rewrite CMake for affected component
         if let Some(c) = root.components.get(comp_name) {
-            rewrite_component_cmake(comp_name, &root, c, cmake_ver)?;
+            rewrite_component_cmake(comp_name, &root, c, cmake_ver, None)?;
         }
         regenerate_root_cmake(&root)?;
 
@@ -61,7 +61,7 @@ pub fn handle_unlink(from: &str, to: Option<&str>) -> Result<()> {
         write_json_pretty_changed("triton.json", &root)?;
 
         for (name, comp) in &root.components {
-            rewrite_component_cmake(name, &root, comp, cmake_ver)?;
+            rewrite_component_cmake(name, &root, comp, cmake_ver, None)?;
         }
         regenerate_root_cmake(&root)?;
 

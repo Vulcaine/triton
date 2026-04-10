@@ -45,10 +45,16 @@ target_include_directories(${{_comp_name}} PRIVATE "include")
 fn default_component(kind: &str) -> TritonComponent {
     TritonComponent {
         kind: kind.into(),
+        cxx_std: None,
+        c_std: None,
         link: vec![],
+        system_libs: vec![],
         defines: vec![],
         exports: vec![],
         resources: vec![],
+        include_dirs: vec![],
+        sources: vec![],
+        arch: None,
         link_options: LinkOptions::None,
         vendor_libs: VendorLibs::None,
         assets: vec![],
@@ -495,6 +501,7 @@ fn rewrite_component_cmake_with_defines() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -531,6 +538,7 @@ fn rewrite_component_cmake_with_resources() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -576,6 +584,7 @@ fn rewrite_component_cmake_with_link_options_all() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -620,6 +629,7 @@ fn rewrite_component_cmake_with_link_options_per_platform() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -668,6 +678,7 @@ fn rewrite_component_cmake_with_vendor_libs_all() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -720,6 +731,7 @@ fn rewrite_component_cmake_with_vendor_libs_per_platform() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -763,6 +775,7 @@ fn rewrite_component_cmake_with_assets() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -800,6 +813,40 @@ fn rewrite_component_cmake_with_assets() {
 
 #[test]
 #[serial]
+fn rewrite_component_cmake_with_asset_glob() {
+    let td = tempdir().unwrap();
+    let root_path = td.path();
+    std::env::set_current_dir(root_path).unwrap();
+    write_minimal_resources(root_path);
+
+    let mut components = BTreeMap::new();
+    let comp = TritonComponent {
+        assets: vec!["bin/*.dll".into()],
+        ..default_component("exe")
+    };
+    components.insert("App".into(), comp.clone());
+
+    let root = TritonRoot {
+        app_name: "testapp".into(),
+        generator: "Ninja".into(),
+        cxx_std: "20".into(),
+        c_std: None,
+        deps: vec![],
+        components,
+        scripts: HashMap::default(),
+    };
+
+    scaffold_component(root_path, "App");
+    rewrite_component_cmake("App", &root, &comp, (3, 30, 1)).unwrap();
+
+    let cm = fs::read_to_string(root_path.join("components/App/CMakeLists.txt")).unwrap();
+    assert!(cm.contains("file(GLOB _triton_asset_matches_"), "Should emit file(GLOB ...) for wildcard assets");
+    assert!(cm.contains("copy_if_different ${_triton_asset_matches_"), "Should copy matched files incrementally");
+    assert!(cm.contains("Copy asset glob: bin/*.dll"), "Should label the glob asset copy rule");
+}
+
+#[test]
+#[serial]
 fn rewrite_component_cmake_with_exports_marks_public() {
     let td = tempdir().unwrap();
     let root_path = td.path();
@@ -812,6 +859,7 @@ fn rewrite_component_cmake_with_exports_marks_public() {
             name: "glm".into(),
             package: Some("glm".into()),
             targets: Some(vec!["glm::glm".into()]),
+            visibility: None,
         }],
         exports: vec!["glm".into()],
         ..default_component("lib")
@@ -822,6 +870,7 @@ fn rewrite_component_cmake_with_exports_marks_public() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![DepSpec::Simple("glm".into())],
         components,
         scripts: HashMap::default(),
@@ -857,6 +906,7 @@ fn rewrite_component_cmake_skips_missing_dir() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components: BTreeMap::new(),
         scripts: HashMap::default(),
@@ -889,6 +939,7 @@ fn rewrite_component_cmake_updates_cmake_minimum_required() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -939,6 +990,7 @@ fn regenerate_root_cmake_includes_subdirectories() {
         app_name: "myapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -997,6 +1049,7 @@ fn regenerate_root_cmake_skips_components_without_dir() {
         app_name: "myapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -1029,6 +1082,7 @@ fn regenerate_root_cmake_sanitizes_app_name_with_hyphens() {
         app_name: "my-cool-app".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components: BTreeMap::new(),
         scripts: HashMap::default(),
@@ -1064,6 +1118,7 @@ fn regenerate_root_cmake_components_sorted_alphabetically() {
         app_name: "sorttest".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -1104,6 +1159,7 @@ fn rewrite_component_cmake_with_empty_defines_no_output() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -1138,6 +1194,7 @@ fn rewrite_component_cmake_with_empty_assets_no_output() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![],
         components,
         scripts: HashMap::default(),
@@ -1167,6 +1224,7 @@ fn rewrite_component_cmake_with_git_dep_generates_subdirectory() {
             name: "filament".into(),
             package: None,
             targets: Some(vec!["filament".into(), "utils".into()]),
+            visibility: None,
         }],
         ..default_component("exe")
     };
@@ -1176,6 +1234,7 @@ fn rewrite_component_cmake_with_git_dep_generates_subdirectory() {
         app_name: "testapp".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![DepSpec::Git(GitDep {
             repo: "google/filament".into(),
             name: "filament".into(),
@@ -1264,6 +1323,7 @@ fn generate_dedups_duplicate_deps() {
         app_name: "demo".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![
             DepSpec::Simple("glm".into()),
             DepSpec::Simple("sdl2".into()),
@@ -1296,6 +1356,7 @@ fn generate_dedup_keeps_detailed_over_simple() {
         app_name: "demo".into(),
         generator: "Ninja".into(),
         cxx_std: "20".into(),
+        c_std: None,
         deps: vec![
             DepSpec::Simple("directxtex".into()),
             DepSpec::Detailed(DepDetailed {
@@ -1337,3 +1398,40 @@ fn generate_dedup_keeps_detailed_over_simple() {
     });
     assert!(has_features, "vcpkg.json should have directxtex with features after dedup");
 }
+
+
+
+
+#[test]
+#[serial]
+fn rewrite_component_cmake_expands_manifest_and_config_placeholders_in_paths() {
+    let td = tempdir().unwrap();
+    let root_path = td.path();
+    std::env::set_current_dir(root_path).unwrap();
+    write_minimal_resources(root_path);
+
+    let mut components = BTreeMap::new();
+    let comp = TritonComponent {
+        assets: vec!["@root/out/${CONFIG}/${app_name}/*.dll".into()],
+        ..default_component("exe")
+    };
+    components.insert("App".into(), comp.clone());
+
+    let root = TritonRoot {
+        app_name: "testapp".into(),
+        generator: "Ninja".into(),
+        cxx_std: "20".into(),
+        c_std: None,
+        deps: vec![],
+        components,
+        scripts: HashMap::default(),
+    };
+
+    scaffold_component(root_path, "App");
+    rewrite_component_cmake("App", &root, &comp, (3, 30, 1)).unwrap();
+
+    let cm = fs::read_to_string(root_path.join("components/App/CMakeLists.txt")).unwrap();
+    assert!(cm.contains("${CMAKE_BUILD_TYPE}"), "Should expand CONFIG to CMAKE_BUILD_TYPE in generated CMake");
+    assert!(cm.contains("testapp"), "Should expand app_name from the manifest in generated CMake");
+}
+

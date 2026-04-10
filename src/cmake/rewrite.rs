@@ -133,7 +133,7 @@ fn fix_target_runtime_dlls(base: &str) -> String {
 }
 
 /// Build the managed dependency block that goes between the triton:deps begin/end markers.
-fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonComponent) -> Vec<String> {
+fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonComponent, config: Option<&str>) -> Vec<String> {
     let mut dep_lines: Vec<String> = vec![
         "# --- triton: resolve local target name ---".into(),
         "if(NOT DEFINED _comp_name)".into(),
@@ -147,7 +147,7 @@ fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonCompon
         dep_lines.push("".into());
     }
 
-    let include_lines = gen_component_include_dirs_lines(comp);
+    let include_lines = gen_component_include_dirs_lines(root, comp);
     if !include_lines.is_empty() {
         dep_lines.extend(include_lines);
         if !dep_lines.last().unwrap().is_empty() {
@@ -155,7 +155,7 @@ fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonCompon
         }
     }
 
-    let source_lines = gen_component_extra_sources_lines(comp);
+    let source_lines = gen_component_extra_sources_lines(root, comp);
     if !source_lines.is_empty() {
         dep_lines.extend(source_lines);
         if !dep_lines.last().unwrap().is_empty() {
@@ -187,7 +187,7 @@ fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonCompon
         }
     }
 
-    let vl_lines = gen_component_vendor_libs_lines(comp);
+    let vl_lines = gen_component_vendor_libs_lines(root, comp);
     if !vl_lines.is_empty() {
         if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
             dep_lines.push("".into());
@@ -211,7 +211,7 @@ fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonCompon
         dep_lines.extend(lo_lines);
     }
 
-    let res_lines = gen_component_resources_lines(comp);
+    let res_lines = gen_component_resources_lines(root, comp);
     if !res_lines.is_empty() {
         if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
             dep_lines.push("".into());
@@ -219,7 +219,7 @@ fn generate_managed_dep_block(name: &str, root: &TritonRoot, comp: &TritonCompon
         dep_lines.extend(res_lines);
     }
 
-    let asset_lines = gen_component_assets_lines(comp);
+    let asset_lines = gen_component_assets_lines(root, comp, config);
     if !asset_lines.is_empty() {
         if !dep_lines.is_empty() && !dep_lines.last().unwrap().is_empty() {
             dep_lines.push("".into());
@@ -245,6 +245,7 @@ pub fn rewrite_component_cmake(
     root: &TritonRoot,
     comp: &TritonComponent,
     cmake_ver: (u32, u32, u32),
+    config: Option<&str>,
 ) -> Result<()> {
     let comp_dir = Path::new("components").join(name);
     if !comp_dir.is_dir() {
@@ -265,7 +266,7 @@ pub fn rewrite_component_cmake(
     // Fill the generated placeholders in the freshly generated template.
     let lang_placeholder = "@TRITON_LANG_SETTINGS@";
     let deps_placeholder = "@TRITON_DEPS@";
-    let dep_lines = generate_managed_dep_block(name, root, comp);
+    let dep_lines = generate_managed_dep_block(name, root, comp, config);
     let dep_block = dep_lines.join("\n");
 
     if !base_fixed.contains(lang_placeholder) || !base_fixed.contains(deps_placeholder) {
@@ -281,3 +282,4 @@ pub fn rewrite_component_cmake(
 
     Ok(())
 }
+

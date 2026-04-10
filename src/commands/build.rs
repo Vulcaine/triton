@@ -517,7 +517,7 @@ impl<'a> BuildBatch<'a> {
         regenerate_root_cmake(&root_filtered)?;
         for name in existing {
             if let Some(comp) = batch_root.components.get(&name) {
-                rewrite_component_cmake(&name, batch_root, comp, cmake_ver)?;
+                rewrite_component_cmake(&name, batch_root, comp, cmake_ver, Some(self.cfg))?;
             }
         }
 
@@ -832,11 +832,13 @@ fn build_tree_has_target(build_dir: &Path, target: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn run_pre_build_scripts(root: &TritonRoot, project: &Path) -> Result<()> {
+fn run_pre_build_scripts(root: &TritonRoot, project: &Path, config: &str) -> Result<()> {
     if root.scripts.contains_key("pre_build") {
         eprintln!("Running pre_build script...");
         let _prev = env::current_dir();
         env::set_current_dir(project)?;
+        // Expose config so ${CONFIG} resolves in script commands (e.g. dotnet build -c ${CONFIG})
+        env::set_var("CONFIG", config);
         crate::commands::handle_script(&["pre_build".to_string()])?;
         if let Ok(prev) = _prev {
             env::set_current_dir(prev)?;
@@ -924,7 +926,7 @@ pub fn handle_build_with_arch(path: &str, component: Option<&str>, arch: Option<
     let using_ninja_on_windows = false;
 
     if component.is_none() {
-        run_pre_build_scripts(&root, &project)?;
+        run_pre_build_scripts(&root, &project, cfg)?;
     }
 
     let batch = BuildBatch {

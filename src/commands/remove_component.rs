@@ -42,7 +42,7 @@ pub fn handle_remove_component(name: &str) -> Result<()> {
     // Regenerate CMake for remaining components
     let cmake_ver = effective_cmake_version();
     for (comp_name, comp) in &root.components {
-        rewrite_component_cmake(comp_name, &root, comp, cmake_ver)?;
+        rewrite_component_cmake(comp_name, &root, comp, cmake_ver, None)?;
     }
     regenerate_root_cmake(&root)?;
 
